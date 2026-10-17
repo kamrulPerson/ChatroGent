@@ -1,6 +1,10 @@
 import crypto from 'crypto';
 
-const SECRET = process.env.SESSION_SECRET || 'devsecret';
+// The insecure signing key used for local sandbox/demo runs. server.ts refuses
+// to boot with NODE_ENV=production while this value is in effect.
+export const DEFAULT_DEV_SECRET = 'devsecret';
+
+const SECRET = process.env.SESSION_SECRET || DEFAULT_DEV_SECRET;
 
 export function signToken(payload: Record<string, any>, expiresInSec = 3600): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');

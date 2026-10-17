@@ -11,9 +11,15 @@ import alertsRouter from './routes/alerts.js';
 import auditRouter from './routes/audit.js';
 import complianceRouter from './routes/compliance.js';
 import proposalsRouter from './routes/proposals.js';
-import { verifyToken } from './auth.js';
+import { verifyToken, DEFAULT_DEV_SECRET } from './auth.js';
 import { audit } from './audit.js';
 import { policy } from './config.js';
+
+// Fail fast: never run in production with the default demo signing key.
+if (process.env.NODE_ENV === 'production' && (process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET) {
+  console.error('Refusing to start: NODE_ENV=production requires a non-default SESSION_SECRET.');
+  process.exit(1);
+}
 
 const app = express();
 const PORT = Number(process.env.API_PORT) || 4000;
