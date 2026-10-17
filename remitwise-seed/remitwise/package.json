@@ -1,0 +1,28 @@
+{
+  "name": "remitwise",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx apps/api/src/server.ts",
+    "dev": "tsx watch apps/api/src/server.ts",
+    "seed": "tsx apps/api/src/seed.ts",
+    "test:unit": "tsx --test apps/api/test/unit.ts"
+  },
+  "dependencies": {
+    "express": "4.19.2",
+    "mongodb": "6.9.0",
+    "csv-parse": "5.5.6",
+    "zod": "3.23.8",
+    "helmet": "7.1.0",
+    "express-rate-limit": "7.4.0",
+    "cors": "2.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/node": "20.16.5",
+    "@types/cors": "2.8.17",
+    "tsx": "4.19.1",
+    "typescript": "5.5.4"
+  }
+}
