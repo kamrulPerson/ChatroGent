@@ -43,9 +43,9 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
           {p.checks.map((c) => (<li key={c}><span aria-hidden="true">✓</span> {c}</li>))}
         </ul>
       )}
-      {p.hash && (
+      {p.approvalHash && (
         <p className="fine">
-          Approval hash <code>{p.hash.slice(0, 16)}…</code>. The confirmation is single-use and bound to this exact proposal.
+          Approval hash <code>{p.approvalHash.slice(0, 16)}…</code>. The confirmation is single-use and bound to this exact proposal.
         </p>
       )}
       {pending ? (

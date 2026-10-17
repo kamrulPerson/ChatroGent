@@ -19,9 +19,10 @@ const PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /\b(developer|admin|root)\s+mode\b/i, reason: 'privilege-escalation phrase' },
   // A long base64-looking blob is a common smuggling channel.
   { re: /(?:[A-Za-z0-9+/]{40,}={0,2})/, reason: 'base64-looking block' },
-  // Text telling the assistant to move money on its own.
+  // Text telling the assistant to move money on its own. A plain typed
+  // "send ৳2,40,000 for my tuition" is a legitimate flow, so we only flag
+  // moving *funds* wholesale, not naming an amount to send.
   { re: /\b(send|transfer|move|wire|pay)\b[^.\n]{0,40}\b(all|the)\b[^.\n]{0,20}\bfunds?\b/i, reason: 'move-funds instruction' },
-  { re: /\bsend\s+(rm|myr|bdt|\$|usd|৳)\s*[\d,]+/i, reason: 'send-money instruction' },
 ];
 
 export function detectInjection(message: string, pasted = false): InjectionVerdict {

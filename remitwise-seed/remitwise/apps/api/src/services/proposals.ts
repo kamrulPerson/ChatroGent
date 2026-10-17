@@ -34,7 +34,7 @@ export type CreateProposalResult =
   | {
       ok: true;
       id: string;
-      payloadHash: string;
+      approvalHash: string;
       expiresAt: Date;
       quote: any;
       ruleResults: any[];
@@ -56,7 +56,7 @@ const round2 = (n: number) => Number(n.toFixed(2));
 // route (/api/proposals) and by the agent's propose_payment tool so behaviour
 // and audit output cannot drift.
 export async function createProposal(userId: string, input: ComplianceInput & { routeProvider?: string }): Promise<
-  | { ok: true; id: string; payloadHash: string; expiresAt: Date; quote: any; ruleResults: any[]; notEnforced: string[] }
+  | { ok: true; id: string; approvalHash: string; expiresAt: Date; quote: any; ruleResults: any[]; notEnforced: string[] }
   | { ok: false; status: number; body: any }
 > {
   const decision = await checkCompliance(userId, input);
@@ -196,7 +196,7 @@ export async function createProposal(userId: string, input: ComplianceInput & { 
   return {
     ok: true,
     id: ins.insertedId.toString(),
-    payloadHash: doc.payloadHash,
+    approvalHash: doc.payloadHash,
     expiresAt: doc.expiresAt,
     quote,
     ruleResults: decision.ruleResults,

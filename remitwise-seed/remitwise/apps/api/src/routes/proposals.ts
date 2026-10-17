@@ -22,7 +22,7 @@ r.post('/', async (req: any, res) => {
     if (!result.ok) return res.status(result.status).json(result.body);
     return res.json({
       id: result.id,
-      payloadHash: result.payloadHash,
+      approvalHash: result.approvalHash,
       expiresAt: result.expiresAt,
       decision: 'pass',
       quote: result.quote,
@@ -37,6 +37,7 @@ r.post('/', async (req: any, res) => {
 r.post('/:id/confirm', async (req: any, res) => {
   try {
     const body = ConfirmSchema.parse(req.body);
+    const providedHash = (body.approvalHash ?? body.payloadHash ?? '').toLowerCase();
     const db = await getDb();
     const pid = new ObjectId(req.params.id);
     const p = await db.collection('proposals').findOne({ _id: pid, userId: uid(req) });
@@ -49,7 +50,7 @@ r.post('/:id/confirm', async (req: any, res) => {
       return res.status(400).json({ error: 'expired' });
     }
 
-    if (p.payloadHash !== body.payloadHash.toLowerCase()) {
+    if (p.payloadHash !== providedHash) {
       await audit({ event: 'confirm_rejected', tier: 'SYS', outcome: 'blocked', decision: 'blocked', userId: req.user.sub, reason: 'hash_mismatch', proposalHash: p.payloadHash });
       return res.status(400).json({ error: 'hash_mismatch' });
     }

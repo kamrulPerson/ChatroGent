@@ -1,7 +1,17 @@
 import type { Route } from '../types';
 import { fmtBDT, fmtMoney } from '../format';
 
-export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId: string }) {
+export default function RouteCard({
+  routes,
+  bestId,
+  source,
+  snapshot,
+}: {
+  routes: Route[];
+  bestId: string;
+  source?: string;
+  snapshot?: string;
+}) {
   return (
     <div className="card routes">
       <div className="tablewrap">
@@ -30,7 +40,11 @@ export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId:
           </tbody>
         </table>
       </div>
-      <p className="fine">Sample data from the project dataset. Total cost = fee plus the hidden FX margin.</p>
+      <p className="fine">
+        {source ? `Data source: ${source}` : 'Sample data from the project dataset'}
+        {snapshot ? `, snapshot ${snapshot}. ` : '. '}
+        Total cost = fee plus the hidden FX margin.
+      </p>
     </div>
   );
 }

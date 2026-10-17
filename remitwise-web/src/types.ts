@@ -20,6 +20,8 @@ export interface Route {
   quotable: boolean;
   reason?: string | null;
   totalCostPct: number;
+  dataType?: string;
+  dateCollected?: string;
 }
 
 export interface RuleView {
@@ -38,7 +40,7 @@ export interface Proposal {
   route: Route;
   checks: string[];
   status: 'pending' | 'confirmed' | 'cancelled' | 'failed';
-  hash?: string;
+  approvalHash?: string;
   notEnforced?: string[];
   rules?: RuleView[];
 }
@@ -66,7 +68,7 @@ export type ChatItem =
   | { kind: 'agent'; id: string; text: string }
   | { kind: 'notice'; id: string; text: string }
   | { kind: 'trace'; id: string; steps: ToolStep[] }
-  | { kind: 'routes'; id: string; routes: Route[]; bestId: string }
+  | { kind: 'routes'; id: string; routes: Route[]; bestId: string; source?: string; snapshot?: string }
   | { kind: 'proposal'; id: string; proposal: Proposal }
   | { kind: 'receipt'; id: string; receipt: Receipt }
   | { kind: 'alert'; id: string; alert: AlertRule };

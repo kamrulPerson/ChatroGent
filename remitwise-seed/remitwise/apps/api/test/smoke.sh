@@ -140,16 +140,16 @@ echo "== proposal flow =="
 # propose happy path
 post /api/proposals "$T2" '{"corridor":"BD-MY","amountUSD":1000,"purpose":"tuition","beneficiaryType":"institution","coveragePeriodMonths":12,"isFirstRelease":true}' >/dev/null
 PID=$(echo "$BODY" | jq -r .id)
-HASH=$(echo "$BODY" | jq -r .payloadHash)
+HASH=$(echo "$BODY" | jq -r .approvalHash)
 [ -n "$PID" ] && [ "$PID" != "null" ] && { PASS=$((PASS+1)); echo "PASS propose tier2 (id=$PID)"; } || { FAIL=$((FAIL+1)); echo "FAIL propose: $BODY"; }
 echo "     decision=$(echo "$BODY"|jq -r .decision) not_enforced=$(echo "$BODY"|jq -r '.notEnforced|join(",")')"
 
 # wrong hash rejected
-post "/api/proposals/$PID/confirm" "$T2" '{"payloadHash":"'0000000000000000000000000000000000000000000000000000000000000000'"}' >/dev/null
+post "/api/proposals/$PID/confirm" "$T2" '{"approvalHash":"'0000000000000000000000000000000000000000000000000000000000000000'"}' >/dev/null
 [ "$STATUS" = "400" ] && { PASS=$((PASS+1)); echo "PASS wrong hash rejected (400)"; } || { FAIL=$((FAIL+1)); echo "FAIL wrong hash: $STATUS $BODY"; }
 
 # correct hash executes
-post "/api/proposals/$PID/confirm" "$T2" "{\"payloadHash\":\"$HASH\"}" >/dev/null
+post "/api/proposals/$PID/confirm" "$T2" "{\"approvalHash\":\"$HASH\"}" >/dev/null
 REC=$(echo "$BODY" | jq -r .receiptId)
 [ -n "$REC" ] && [ "$REC" != "null" ] && { PASS=$((PASS+1)); echo "PASS confirm executed receipt=$REC"; } || { FAIL=$((FAIL+1)); echo "FAIL confirm: $STATUS $BODY"; }
 
@@ -165,13 +165,13 @@ NT=$(echo "$BODY" | jq '.transfers|length')
 [ "${NT:-0}" -ge 1 ] && { PASS=$((PASS+1)); echo "PASS dashboard shows $NT transfer(s)"; } || { FAIL=$((FAIL+1)); echo "FAIL dashboard transfers: $BODY"; }
 
 # double confirm refused
-post "/api/proposals/$PID/confirm" "$T2" "{\"payloadHash\":\"$HASH\"}" >/dev/null
+post "/api/proposals/$PID/confirm" "$T2" "{\"approvalHash\":\"$HASH\"}" >/dev/null
 [ "$STATUS" = "400" ] || [ "$STATUS" = "409" ] && { PASS=$((PASS+1)); echo "PASS double confirm refused ($STATUS)"; } || { FAIL=$((FAIL+1)); echo "FAIL double confirm: $STATUS"; }
 
 # confirm with pasted instruction refused, nothing executed
 post /api/proposals "$T2" '{"corridor":"BD-MY","amountUSD":3000,"purpose":"tuition","beneficiaryType":"institution"}' >/dev/null
-PID2=$(echo "$BODY" | jq -r .id); HASH2=$(echo "$BODY" | jq -r .payloadHash)
-post "/api/proposals/$PID2/confirm" "$T2" "{\"payloadHash\":\"$HASH2\",\"instructionSource\":\"pasted_or_untrusted\"}" >/dev/null
+PID2=$(echo "$BODY" | jq -r .id); HASH2=$(echo "$BODY" | jq -r .approvalHash)
+post "/api/proposals/$PID2/confirm" "$T2" "{\"approvalHash\":\"$HASH2\",\"instructionSource\":\"pasted_or_untrusted\"}" >/dev/null
 D=$(echo "$BODY" | jq -r .decision)
 { [ "$STATUS" = "400" ] && [ "$D" = "blocked" ]; } && { PASS=$((PASS+1)); echo "PASS confirm pasted refused"; } || { FAIL=$((FAIL+1)); echo "FAIL confirm pasted: $STATUS $D"; }
 post "/api/proposals/$PID2/cancel" "$T2" '{}' >/dev/null
@@ -183,8 +183,8 @@ echo "== provider failure refund =="
 get /api/me/balances "$T2" >/dev/null
 BAL_BEFORE=$(echo "$BODY" | jq -r '.[]|select(.currency=="BDT")|.amount')
 post /api/proposals "$T2" '{"corridor":"BD-MY","amountUSD":800,"purpose":"tuition","beneficiaryType":"institution","routeProvider":"FAIL-SANDBOX"}' >/dev/null
-PIDF=$(echo "$BODY" | jq -r .id); HASHF=$(echo "$BODY" | jq -r .payloadHash)
-post "/api/proposals/$PIDF/confirm" "$T2" "{\"payloadHash\":\"$HASHF\"}" >/dev/null
+PIDF=$(echo "$BODY" | jq -r .id); HASHF=$(echo "$BODY" | jq -r .approvalHash)
+post "/api/proposals/$PIDF/confirm" "$T2" "{\"approvalHash\":\"$HASHF\"}" >/dev/null
 CSTATUS="$STATUS"; CBODY="$BODY"
 get /api/me/balances "$T2" >/dev/null
 BAL_AFTER=$(echo "$BODY" | jq -r '.[]|select(.currency=="BDT")|.amount')
@@ -201,8 +201,8 @@ echo "== daily cap (business check, spec 7) =="
 # saturate it; the next (still within the per-transfer low-value cap) is refused.
 for _ in 1 2; do
   post /api/proposals "$T1" '{"corridor":"BD-MY","amountUSD":1000,"purpose":"living","beneficiaryType":"student_card"}' >/dev/null
-  DPID=$(echo "$BODY" | jq -r .id); DHASH=$(echo "$BODY" | jq -r .payloadHash)
-  post "/api/proposals/$DPID/confirm" "$T1" "{\"payloadHash\":\"$DHASH\"}" >/dev/null
+  DPID=$(echo "$BODY" | jq -r .id); DHASH=$(echo "$BODY" | jq -r .approvalHash)
+  post "/api/proposals/$DPID/confirm" "$T1" "{\"approvalHash\":\"$DHASH\"}" >/dev/null
 done
 post /api/proposals "$T1" '{"corridor":"BD-MY","amountUSD":1000,"purpose":"living","beneficiaryType":"student_card"}' >/dev/null
 DEC=$(echo "$BODY" | jq -r .error)
@@ -210,12 +210,12 @@ DEC=$(echo "$BODY" | jq -r .error)
 
 # --- expired proposal (backdate expiresAt, then confirm) ---------------------
 post /api/proposals "$T2" '{"corridor":"BD-MY","amountUSD":800,"purpose":"tuition","beneficiaryType":"institution"}' >/dev/null
-PID3=$(echo "$BODY" | jq -r .id); HASH3=$(echo "$BODY" | jq -r .payloadHash)
+PID3=$(echo "$BODY" | jq -r .id); HASH3=$(echo "$BODY" | jq -r .approvalHash)
 if command -v docker >/dev/null 2>&1; then
   set -a; . ./.env 2>/dev/null; set +a
   docker compose exec -T mongo mongosh "mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@localhost:27017/?authSource=admin" --quiet --eval \
     "db.getSiblingDB('${MONGO_APP_DB}').proposals.updateOne({_id:ObjectId('${PID3}')},{\$set:{expiresAt:new Date(0)}})" >/dev/null 2>&1
-  post "/api/proposals/$PID3/confirm" "$T2" "{\"payloadHash\":\"$HASH3\"}" >/dev/null
+  post "/api/proposals/$PID3/confirm" "$T2" "{\"approvalHash\":\"$HASH3\"}" >/dev/null
   [ "$STATUS" = "400" ] && echo "$BODY" | jq -e '.error=="expired"' >/dev/null && { PASS=$((PASS+1)); echo "PASS expired proposal refused"; } || { FAIL=$((FAIL+1)); echo "FAIL expiry: $STATUS $BODY"; }
 fi
 

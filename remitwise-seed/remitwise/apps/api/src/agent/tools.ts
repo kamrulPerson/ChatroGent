@@ -10,6 +10,7 @@ import { checkCompliance } from '../services/compliance.js';
 import { createProposal } from '../services/proposals.js';
 import { CORRIDOR_META, corridorRate, computeQuote, latestRate } from '../services/convert.js';
 import { corridors } from '../validate.js';
+import { fmtAmount, fmtMoney } from './format.js';
 import type { ToolSpec } from './llm.js';
 
 export type Tier = 'T1' | 'T2' | 'T3';
@@ -120,7 +121,7 @@ async function getBalance(userId: string): Promise<ToolResult> {
   const bals = await db.collection('accounts').find({ userId: new ObjectId(userId) }).toArray();
   const balances = bals.map((b: any) => ({ currency: b.currency, amount: b.balance }));
   const notable = balances.find((b) => b.currency === 'BDT') || balances[0];
-  return { status: 'done', summary: notable ? `${notable.currency} ${notable.amount}` : 'no accounts', data: { balances } };
+  return { status: 'done', summary: notable ? fmtAmount(notable.amount, notable.currency) : 'no accounts', data: { balances } };
 }
 
 async function compareRoutes(args: any): Promise<ToolResult> {
@@ -159,9 +160,9 @@ async function compareRoutes(args: any): Promise<ToolResult> {
   const best = routes[0];
   return {
     status: 'done',
-    summary: `${routes.length} route(s); best ${best.name} nets ${best.currency} ${best.net}`,
+    summary: `${routes.length} route(s); best ${best.name} nets ${fmtAmount(best.net ?? 0, best.currency)}`,
     data: { corridor: args.corridor, currency: conv.dest, pair: conv.pair, source: 'routes dataset', dateCollected: best.dateCollected, routes },
-    card: { kind: 'routes', routes, bestId: best.id },
+    card: { kind: 'routes', routes, bestId: best.id, source: 'routes dataset', snapshot: best.dateCollected },
   };
 }
 
@@ -283,19 +284,21 @@ async function proposePayment(userId: string, args: any, instructionSource: stri
     route,
     status: 'pending' as const,
     checks: res.ruleResults.filter((r: any) => r.passed && r.status === 'enforced').map((r: any) => `${r.ruleId} passed`),
-    hash: res.payloadHash,
+    approvalHash: res.approvalHash,
     rules: res.ruleResults.map(ruleView),
     notEnforced: res.notEnforced,
   };
   return {
     status: 'done',
-    summary: `Draft ready: send BDT ${q.sendBDT}, they receive ${q.currency} ${q.net} (${q.provider})`,
+    summary: `Draft ready: send ${fmtAmount(q.sendBDT, 'BDT')}, they receive ${fmtAmount(q.net, q.currency)} (${q.provider})`,
     data: {
       proposalId: res.id,
-      payloadHash: res.payloadHash,
+      approvalHash: res.approvalHash,
+      amountUsd: Number(usdRes.usd.toFixed(2)),
       currency: q.currency,
       pair: q.pair,
       rate: q.rate,
+      usdPerBdt: q.usdPerBdt,
       feeBDT: q.feeBDT,
       sendBDT: q.sendBDT,
       gross: q.gross,
@@ -306,7 +309,7 @@ async function proposePayment(userId: string, args: any, instructionSource: stri
       source: 'routes dataset',
       dataType: q.dataType,
     },
-    card: { kind: 'proposal', proposal },
+    card: { kind: 'proposal', proposal, source: 'routes dataset', snapshot: q.dateCollected },
   };
 }
 

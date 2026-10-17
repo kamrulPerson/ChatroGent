@@ -79,7 +79,7 @@ export interface Quote {
 
 export interface ProposeResponse {
   id: string;
-  payloadHash: string;
+  approvalHash: string;
   expiresAt: string;
   decision: 'pass';
   quote: Quote;
@@ -107,6 +107,58 @@ export interface FxWindow {
   average: number;
   currentVsAverage: number;
   dataType: string;
+}
+
+// --- Agent chat (SSE) --------------------------------------------------------
+
+export type ChatEvent =
+  | { type: 'meta'; mode: 'llm' | 'offline' }
+  | { type: 'tool_call'; id: string; tool: string; tier: string; args: any }
+  | { type: 'tool_result'; id: string; tool: string; status: 'done' | 'blocked' | 'error'; summary: string; data: any }
+  | { type: 'card'; card: any }
+  | { type: 'text'; delta: string }
+  | { type: 'done'; mode: 'llm' | 'offline' }
+  | { type: 'error'; message: string };
+
+// POST /api/chat and decode the SSE stream. Every frame is `event: <type>` plus
+// a `data:` JSON line; we surface the parsed payload through onEvent as it
+// arrives (tools stream their steps, the final text streams in deltas).
+async function chatStream(
+  message: string,
+  pasted: boolean,
+  onEvent: (e: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ message, pasted }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const t = await res.text().catch(() => '');
+    throw new Error(t || `chat failed (${res.status})`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
+      if (!dataLine) continue;
+      try {
+        onEvent(JSON.parse(dataLine.slice(5).trim()));
+      } catch {
+        // ignore malformed frame
+      }
+    }
+  }
 }
 
 async function doLogin(email: string, password: string) {
@@ -150,6 +202,8 @@ export const api = {
   useMock,
   login: doLogin,
 
+  chat: chatStream,
+
   dashboard: async (): Promise<DashboardData> => request('/api/me/dashboard'),
 
   fxWindow: async (pair = 'MYR/BDT', days = 30): Promise<FxWindow> =>
@@ -166,10 +220,10 @@ export const api = {
 
   confirmProposal: async (
     id: string,
-    payloadHash: string,
+    approvalHash: string,
     instructionSource: 'user_typed' | 'pasted_or_untrusted' = 'user_typed',
   ): Promise<{ receiptId: string; status: string; amountBDT: number }> =>
-    request(`/api/proposals/${id}/confirm`, { method: 'POST', body: JSON.stringify({ payloadHash, instructionSource }) }),
+    request(`/api/proposals/${id}/confirm`, { method: 'POST', body: JSON.stringify({ approvalHash, instructionSource }) }),
 
   cancelProposal: async (id: string): Promise<{ ok: boolean; status: string }> =>
     request(`/api/proposals/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) }),

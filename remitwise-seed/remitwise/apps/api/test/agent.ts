@@ -10,11 +10,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ObjectId } from 'mongodb';
+import { scryptSync, randomBytes } from 'node:crypto';
 import { getDb, closeDb } from '../src/db.js';
 import { setTestProvider, ScriptedProvider } from '../src/agent/llm.js';
 import { runAgent } from '../src/agent/loop.js';
 import { detectInjection } from '../src/agent/injection.js';
 import { validateToolArgs } from '../src/agent/tools.js';
+import { parseAmount } from '../src/agent/fallback.js';
+import { fmtUsd } from '../src/agent/format.js';
 import { redactString, redactValue } from '../src/agent/redact.js';
 
 const BASE = process.env.TEST_BASE_URL || 'http://localhost:4000';
@@ -29,14 +32,47 @@ before(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AGENT_TEST_MODE = '1';
   const db = await getDb();
-  const u = await db.collection('users').findOne({ email: DEMO_EMAIL });
-  if (!u) throw new Error('seed data missing: run `npm run seed` first');
-  userId = String(u._id);
+
+  const demo = await db.collection('users').findOne({ email: DEMO_EMAIL });
+  if (!demo) throw new Error('seed data missing: run `npm run seed` first');
+
+  // Each run gets its own user so transfers/proposals from a previous run can
+  // never leak in. The app DB role has no delete privilege, so we create fresh
+  // state instead of trying to clean up.
+  const email = `agent-test-${Date.now()}-${Math.floor(Math.random() * 1e6)}@demo.remitwise`;
+  const salt = randomBytes(16).toString('hex');
+  const passwordHash = `${salt}:${scryptSync(DEMO_PASSWORD, salt, 64).toString('hex')}`;
+  const now = new Date();
+  const insUser = await db.collection('users').insertOne({
+    email,
+    name: 'Agent test user',
+    kycTier: 2,
+    passwordHash,
+    createdAt: now,
+    updatedAt: now,
+  });
+  userId = insUser.insertedId.toString();
+  const oid = insUser.insertedId;
+
+  await db.collection('accounts').insertMany([
+    { userId: oid, currency: 'BDT', balance: 2500000, createdAt: now },
+    { userId: oid, currency: 'MYR', balance: 6000, createdAt: now },
+  ]);
+
+  const file = await db.collection('student_files').findOne({ userId: demo._id });
+  if (file) {
+    const { _id, ...rest } = file as any;
+    await db.collection('student_files').insertOne({ ...rest, userId: oid });
+  }
+  const docs = await db.collection('documents').find({ userId: demo._id }).toArray();
+  if (docs.length) {
+    await db.collection('documents').insertMany(docs.map(({ _id, ...rest }: any) => ({ ...rest, userId: oid })));
+  }
 
   const res = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
+    body: JSON.stringify({ email, password: DEMO_PASSWORD }),
   });
   const body: any = await res.json();
   token = body.token;
@@ -61,6 +97,16 @@ async function turn(
   setTestProvider(new ScriptedProvider(turns, opts));
   await runAgent({ userId, message, pasted, emit: (e) => events.push(e) });
   setTestProvider(null);
+  return events;
+}
+
+// Run the deterministic offline path (no provider at all), as when the live
+// model is unavailable.
+async function offlineTurn(message: string, pasted = false): Promise<any[]> {
+  const events: any[] = [];
+  process.env.AGENT_TEST_MODE = '1';
+  setTestProvider(null);
+  await runAgent({ userId, message, pasted, emit: (e) => events.push(e) });
   return events;
 }
 
@@ -89,11 +135,11 @@ function transferCount(filter: any = {}): Promise<number> {
   return getDb().then((db) => db.collection('transfers').countDocuments(filter));
 }
 
-async function confirm(proposalId: string, payloadHash: string, instructionSource?: string) {
+async function confirm(proposalId: string, approvalHash: string, instructionSource?: string) {
   const res = await fetch(`${BASE}/api/proposals/${proposalId}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ payloadHash, ...(instructionSource ? { instructionSource } : {}) }),
+    body: JSON.stringify({ approvalHash, ...(instructionSource ? { instructionSource } : {}) }),
   });
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
@@ -145,13 +191,13 @@ test('a: Flow 1 end to end creates exactly one transfer and debits once', async 
   const proposal = card(events, 'proposal')?.proposal;
   assert.ok(proposal?.id, 'proposal card with an id emitted');
   assert.equal(proposal.status, 'pending');
-  assert.match(proposal.hash, /^[0-9a-f]{64}$/);
+  assert.match(proposal.approvalHash, /^[0-9a-f]{64}$/);
 
   const outstanding = await transferCount({ proposalId: new ObjectId(proposal.id) });
   assert.equal(outstanding, 0, 'no transfer before confirmation');
 
   // The UI Confirm button calls /proposals/:id/confirm with the user's token.
-  const c1 = await confirm(proposal.id, proposal.hash);
+  const c1 = await confirm(proposal.id, proposal.approvalHash);
   assert.equal(c1.status, 200, JSON.stringify(c1.body));
   assert.ok(c1.body.receiptId, 'receipt issued');
   assert.equal(c1.body.status, 'completed');
@@ -165,7 +211,7 @@ test('a: Flow 1 end to end creates exactly one transfer and debits once', async 
   assert.equal(afterFirst, before - 1000 * BDT_PER_USD, 'balance debited exactly once');
 
   // Single-use: a second confirm must not move money again.
-  const c2 = await confirm(proposal.id, proposal.hash);
+  const c2 = await confirm(proposal.id, proposal.approvalHash);
   assert.notEqual(c2.status, 200, 'second confirm rejected');
   const afterSecond = await bdtBalance();
   assert.equal(afterSecond, afterFirst, 'second confirm did not debit again');
@@ -267,6 +313,41 @@ test('g: provider failure and 429 fall back to offline Flow 1', async () => {
     assert.equal(events.at(-1).type, 'done');
     assert.equal(events.at(-1).mode, 'offline');
   }
+});
+
+// (fix 5) The exact prompt "Dad wants to send ৳2,40,000 for my tuition": BDT is
+// parsed, converted to USD, formatted with Indian grouping, and the offline
+// fallback calls the tools in the required order.
+test('l: ৳2,40,000 prompt parses, converts to USD, and groups digits (Indian)', async () => {
+  const parsed = parseAmount('Dad wants to send ৳2,40,000 for my tuition');
+  assert.deepEqual(parsed, { amount: 240000, currency: 'BDT' });
+
+  const events = await offlineTurn('Dad wants to send ৳2,40,000 for my tuition');
+  assert.deepEqual(toolNames(events), ['get_balance', 'check_compliance', 'compare_routes', 'propose_payment']);
+
+  const prop = results(events).find((x) => x.tool === 'propose_payment');
+  assert.ok(prop && prop.status === 'done', 'proposal drafted');
+  assert.equal(prop.data.currency, 'MYR');
+
+  const proposalCard = card(events, 'proposal')?.proposal;
+  assert.ok(proposalCard, 'proposal card emitted');
+  assert.match(proposalCard.approvalHash, /^[0-9a-f]{64}$/);
+  assert.ok(Math.abs(proposalCard.amountBDT - 240000) < 2, 'sends about ৳2,40,000');
+
+  const body = text(events);
+  assert.match(body, /2,40,000/, 'Indian-style grouping for taka');
+  assert.ok(body.includes(`about USD ${fmtUsd(prop.data.amountUsd)}`), 'shows the BDT to USD conversion');
+  assert.match(body, /routes dataset/, 'names the data source');
+  assert.match(body, /snapshot \d{4}-\d{2}-\d{2}/, 'shows the snapshot date');
+});
+
+// (fix 3) With no amount present the offline fallback asks for one and runs no
+// tools instead of inventing a default.
+test('m: offline fallback asks for an amount when none is given', async () => {
+  const events = await offlineTurn('send tuition to my university');
+  assert.equal(toolNames(events).length, 0, 'no tools called without an amount');
+  assert.equal(card(events, 'proposal'), undefined, 'no card without an amount');
+  assert.match(text(events), /how much/i);
 });
 
 // (j) redaction: a fake key never reaches logs, audit_log, SSE events, or responses.

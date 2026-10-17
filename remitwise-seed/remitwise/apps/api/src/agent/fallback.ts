@@ -1,5 +1,6 @@
 import { invokeTool } from './exec.js';
 import { redactString } from './redact.js';
+import { fmtBDT, fmtMoney, fmtUsd } from './format.js';
 import type { Emit } from './events.js';
 
 function say(emit: Emit, text: string): void {
@@ -15,15 +16,31 @@ export interface FallbackCtx {
 
 type Intent = 'tuition' | 'balance' | 'fx' | 'credit' | 'unknown';
 
-function parseAmount(message: string): { amount: number; currency: 'BDT' | 'USD' } {
+export interface ParsedAmount {
+  amount: number;
+  currency: 'BDT' | 'USD';
+}
+
+// Returns null when no amount is present. We never invent a default amount: the
+// assistant asks the user instead.
+export function parseAmount(message: string): ParsedAmount | null {
   const cleaned = message.replace(/,/g, '');
   const bdt = cleaned.match(/(?:৳|bdt|taka)\s*([\d.]+)/i) || cleaned.match(/([\d.]+)\s*(?:৳|bdt|taka)/i);
-  if (bdt) return { amount: Number(bdt[1]), currency: 'BDT' };
+  if (bdt) {
+    const amount = Number(bdt[1]);
+    return amount > 0 ? { amount, currency: 'BDT' } : null;
+  }
   const usd = cleaned.match(/(?:usd|\$)\s*([\d.]+)/i) || cleaned.match(/([\d.]+)\s*(?:usd|\$)/i);
-  if (usd) return { amount: Number(usd[1]), currency: 'USD' };
+  if (usd) {
+    const amount = Number(usd[1]);
+    return amount > 0 ? { amount, currency: 'USD' } : null;
+  }
   const plain = cleaned.match(/\b(\d{3,})\b/);
-  if (plain) return { amount: Number(plain[1]), currency: 'USD' };
-  return { amount: 8000, currency: 'USD' };
+  if (plain) {
+    const amount = Number(plain[1]);
+    return amount > 0 ? { amount, currency: 'USD' } : null;
+  }
+  return null;
 }
 
 function detectIntent(message: string): Intent {
@@ -35,35 +52,56 @@ function detectIntent(message: string): Intent {
   return 'unknown';
 }
 
-export { detectIntent, parseAmount };
+export { detectIntent };
 
 async function tuitionFlow(ctx: FallbackCtx): Promise<void> {
   const { emit } = ctx;
-  const { amount, currency } = parseAmount(ctx.message);
+  const parsed = parseAmount(ctx.message);
+  if (!parsed) {
+    say(emit, 'How much would you like to send? Tell me the amount, for example "৳2,40,000" or "2000 USD".');
+    return;
+  }
+  const { amount, currency } = parsed;
   const corridor = 'BD-MY';
 
   await invokeTool(emit, ctx.userId, 'get_balance', {}, ctx.instructionSource);
 
-  const routes = await invokeTool(emit, ctx.userId, 'compare_routes', { corridor, amount, currency }, ctx.instructionSource);
-  if (routes.card) emit({ type: 'card', card: routes.card });
-
-  const compliance = await invokeTool(
+  const comp = await invokeTool(
     emit,
     ctx.userId,
     'check_compliance',
-    { corridor, amount, currency, purpose: 'tuition', beneficiaryType: 'institution' },
+    {
+      corridor,
+      amount,
+      currency,
+      purpose: 'tuition',
+      beneficiaryType: 'institution',
+      coveragePeriodMonths: 12,
+      isFirstRelease: true,
+    },
     ctx.instructionSource,
   );
-  if (compliance.status === 'blocked') {
-    say(emit, `This transfer cannot proceed: ${compliance.summary}. Nothing has been sent.`);
+  if (comp.status !== 'done') {
+    say(emit, `I can't prepare that payment: compliance returned "${comp.summary}". Nothing has been sent.`);
     return;
   }
+
+  const routes = await invokeTool(emit, ctx.userId, 'compare_routes', { corridor, amount, currency }, ctx.instructionSource);
+  if (routes.card) emit({ type: 'card', card: routes.card });
 
   const prop = await invokeTool(
     emit,
     ctx.userId,
     'propose_payment',
-    { corridor, amount, currency, purpose: 'tuition', beneficiaryType: 'institution', coveragePeriodMonths: 6 },
+    {
+      corridor,
+      amount,
+      currency,
+      purpose: 'tuition',
+      beneficiaryType: 'institution',
+      coveragePeriodMonths: 12,
+      isFirstRelease: true,
+    },
     ctx.instructionSource,
   );
   if (prop.card) emit({ type: 'card', card: prop.card });
@@ -74,11 +112,13 @@ async function tuitionFlow(ctx: FallbackCtx): Promise<void> {
   }
 
   const d = prop.data;
+  const bdtAmount = currency === 'BDT' ? amount : amount * d.usdPerBdt;
   say(
     emit,
-    `Best route: ${d.provider} via ${d.pair} at ${d.rate}. ` +
-      `You send BDT ${d.sendBDT}; they receive ${d.currency} ${d.net} ` +
-      `(fee BDT ${d.feeBDT}, ETA ${d.etaDays} days). ` +
+    `You asked to send ৳${fmtBDT(bdtAmount)} (about USD ${fmtUsd(d.amountUsd)}). ` +
+      `Best route: ${d.provider}. You send BDT ${fmtBDT(d.sendBDT)}; they receive ` +
+      `${d.currency} ${fmtMoney(d.net, d.currency)} (fee BDT ${fmtBDT(d.feeBDT)}, ETA ${d.etaDays} days). ` +
+      `Routes from the routes dataset (snapshot ${d.dateCollected}). ` +
       `This is a draft; nothing has been sent. Approve the card to send.`,
   );
 }

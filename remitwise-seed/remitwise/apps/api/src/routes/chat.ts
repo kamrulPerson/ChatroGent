@@ -56,7 +56,7 @@ r.post('/', chatLimiter, async (req: any, res: any) => {
     ruleId: verdict.untrusted ? 'INJ_01' : 'AGENT_MSG',
     reason: verdict.untrusted ? verdict.reason : undefined,
     chars: parsed.data.message.length,
-    excerpt: redactString(parsed.data.message).slice(0, 500),
+    excerpt: redactString(parsed.data.message).slice(0, 200),
   });
 
   try {
