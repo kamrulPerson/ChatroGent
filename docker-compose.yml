@@ -66,6 +66,9 @@ services:
       - SESSION_SECRET=${SESSION_SECRET}
       - CORS_ORIGIN=${CORS_ORIGIN}
       - PROPOSAL_TTL_SECONDS=${PROPOSAL_TTL_SECONDS}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
     command: ["npm", "start"]
 
 volumes:

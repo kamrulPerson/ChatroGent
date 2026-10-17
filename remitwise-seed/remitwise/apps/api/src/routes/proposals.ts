@@ -2,166 +2,32 @@ import { Router } from 'express';
 import { getDb } from '../db.js';
 import { ProposeSchema, ConfirmSchema } from '../validate.js';
 import { checkCompliance } from '../services/compliance.js';
-import { policy } from '../config.js';
 import { audit } from '../audit.js';
 import { MockPaymentProvider } from '../provider.js';
-import { CORRIDOR_META, corridorRate, computeQuote } from '../services/convert.js';
+import { createProposal, BDT_PER_USD } from '../services/proposals.js';
 import { ObjectId } from 'mongodb';
-import crypto from 'crypto';
 
 const r = Router();
 const provider = new MockPaymentProvider();
-const BDT_PER_USD = 120;
 
 // Proposals and transfers key on the ObjectId form of the user id so that the
 // compliance engine (velocity / anomaly / daily-cap reads) and the dashboard
 // queries can find them; the audit log stays keyed on the string subject.
 const uid = (req: any) => new ObjectId(req.user.sub);
 
-function canonical(obj: any): string {
-  return JSON.stringify(obj, Object.keys(obj).sort());
-}
-
-export function payloadHashOf(input: any, userId: string): string {
-  return crypto.createHash('sha256').update(canonical({ ...input, userId })).digest('hex');
-}
-
 r.post('/', async (req: any, res) => {
   try {
     const input = ProposeSchema.parse(req.body);
-    const decision = await checkCompliance(req.user.sub, input);
-
-    if (decision.decision !== 'pass') {
-      await audit({
-        event: 'proposal_refused',
-        tier: 'T2',
-        outcome: decision.decision,
-        decision: decision.decision,
-        userId: req.user.sub,
-        inputs: input,
-        ruleResults: decision.ruleResults,
-        notEnforced: decision.notEnforced,
-      });
-      return res.status(400).json({
-        error: 'compliance_failed',
-        decision: decision.decision,
-        ruleResults: decision.ruleResults,
-        notEnforced: decision.notEnforced,
-        rulesVersion: decision.rulesVersion,
-      });
-    }
-
-    const remaining = decision.limits.dailyCapUSD - decision.limits.sentTodayUSD;
-    if (input.amountUSD > remaining) {
-      await audit({
-        event: 'proposal_refused',
-        tier: 'T2',
-        outcome: 'escalate_to_bank',
-        decision: 'escalate_to_bank',
-        userId: req.user.sub,
-        inputs: input,
-        reason: 'daily_cap',
-        ruleResults: decision.ruleResults,
-      });
-      return res.status(400).json({
-        error: 'daily_limit_exceeded',
-        decision: 'escalate_to_bank',
-        dailyCapUSD: decision.limits.dailyCapUSD,
-        sentTodayUSD: decision.limits.sentTodayUSD,
-      });
-    }
-
-    const db = await getDb();
-
-    // Resolve the destination currency for this corridor. No fallback: a
-    // corridor without a rate is refused.
-    const meta = CORRIDOR_META[input.corridor];
-    const conv = meta ? await corridorRate(input.corridor) : null;
-    if (!conv) {
-      await audit({ event: 'proposal_refused', tier: 'T2', outcome: 'blocked', decision: 'blocked', userId: req.user.sub, reason: 'no_rate', inputs: input });
-      return res.status(400).json({ error: 'no_rate', message: `no rate for this corridor (${input.corridor})` });
-    }
-
-    const route = await db.collection('routes').findOne({
-      corridor: input.corridor,
-      ...(input.routeProvider ? { provider: input.routeProvider } : {}),
-    });
-    const feeBDT = Number(route?.feeBDT ?? 2500);
-    const spreadPct = Number(route?.spreadPct ?? 1.5);
-    const q = computeQuote(input.amountUSD, conv.usdPerBdt, conv.rate, feeBDT, spreadPct, conv.dest, conv.pair);
-    if (!q.quotable) {
-      await audit({ event: 'proposal_refused', tier: 'T2', outcome: 'blocked', decision: 'blocked', userId: req.user.sub, reason: 'below_minimum_payout', inputs: input });
-      return res.status(400).json({
-        error: 'below_minimum_payout',
-        reason: 'fee_and_margin_exceed_amount',
-        message: 'Fees and the FX margin would leave nothing for the recipient. Send a larger amount.',
-      });
-    }
-
-    const round2 = (n: number) => Number(n.toFixed(2));
-    const quote = {
-      provider: route?.provider ?? input.routeProvider ?? 'Unknown provider',
-      feeBDT,
-      spreadPct,
-      etaDays: Number(route?.etaDays ?? 4),
-      dataType: route?.dataType ?? 'estimated',
-      dateCollected: route?.dateCollected ?? new Date().toISOString().slice(0, 10),
-      currency: conv.dest,
-      pair: conv.pair,
-      rate: conv.rate,
-      usdPerBdt: conv.usdPerBdt,
-      sendBDT: round2(q.sendBDT),
-      gross: round2(q.gross),
-      net: round2(q.net),
-      netUsd: round2(q.netUsd),
-    };
-
-    const normalized = {
-      corridor: input.corridor,
-      amountUSD: input.amountUSD,
-      routeProvider: quote.provider,
-      purpose: input.purpose ?? null,
-      studyLevel: input.studyLevel ?? null,
-      coveragePeriodMonths: input.coveragePeriodMonths ?? null,
-      isFirstRelease: input.isFirstRelease ?? null,
-      beneficiaryType: input.beneficiaryType ?? null,
-      namedInInstitutionDocs: input.namedInInstitutionDocs ?? null,
-      bankBranchId: input.bankBranchId ?? null,
-      payerName: input.payerName ?? null,
-    };
-
-    const now = new Date();
-    const doc = {
-      ...normalized,
-      userId: uid(req),
-      quoteSnapshot: quote,
-      payloadHash: payloadHashOf(normalized, req.user.sub),
-      rulesVersion: decision.rulesVersion,
-      status: 'pending',
-      expiresAt: new Date(now.getTime() + policy.proposalTtlSeconds * 1000),
-      createdAt: now,
-    };
-    const ins = await db.collection('proposals').insertOne(doc);
-
-    await audit({
-      event: 'proposal_created',
-      tier: 'T2',
-      outcome: 'pass',
-      decision: 'pass',
-      userId: req.user.sub,
-      inputs: normalized,
-      proposalHash: doc.payloadHash,
-      ruleResults: decision.ruleResults,
-    });
-
+    const result = await createProposal(req.user.sub, input);
+    if (!result.ok) return res.status(result.status).json(result.body);
     return res.json({
-      id: ins.insertedId.toString(),
-      payloadHash: doc.payloadHash,
-      expiresAt: doc.expiresAt,
+      id: result.id,
+      payloadHash: result.payloadHash,
+      expiresAt: result.expiresAt,
       decision: 'pass',
-      quote,
-      ruleResults: decision.ruleResults,
-      notEnforced: decision.notEnforced,
+      quote: result.quote,
+      ruleResults: result.ruleResults,
+      notEnforced: result.notEnforced,
     });
   } catch (e: any) {
     return res.status(400).json({ error: 'bad request' });
@@ -290,18 +156,16 @@ r.post('/:id/cancel', async (req: any, res) => {
     if (!p) return res.status(404).json({ error: 'not_found' });
     const upd = await db
       .collection('proposals')
-      .updateOne({ _id: pid, userId: uid(req), status: 'pending' }, { $set: { status: 'cancelled', cancelledAt: new Date() } });
+      .updateOne({ _id: pid, status: 'pending' }, { $set: { status: 'cancelled' } });
     if (upd.modifiedCount === 0) return res.status(400).json({ error: 'not_pending' });
-    // CANCEL_01: a cancelled remittance is recorded as a reversal reference.
     await audit({
-      event: 'transfer_reversed',
+      event: 'proposal_cancelled',
       tier: 'T2',
-      outcome: 'cancelled',
+      outcome: 'pass',
       decision: 'pass',
       userId: req.user.sub,
-      ruleId: 'CANCEL_01',
       proposalHash: p.payloadHash,
-      reversalOf: { originalProposalId: pid.toString() },
+      ruleId: 'CANCEL_01',
     });
     return res.json({ ok: true, status: 'cancelled' });
   } catch (e: any) {

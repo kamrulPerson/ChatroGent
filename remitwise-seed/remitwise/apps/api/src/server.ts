@@ -11,9 +11,11 @@ import alertsRouter from './routes/alerts.js';
 import auditRouter from './routes/audit.js';
 import complianceRouter from './routes/compliance.js';
 import proposalsRouter from './routes/proposals.js';
+import chatRouter from './routes/chat.js';
 import { verifyToken, DEFAULT_DEV_SECRET } from './auth.js';
 import { audit } from './audit.js';
 import { policy } from './config.js';
+import { logProviderStartup } from './agent/llm.js';
 
 // Fail fast: never run in production with the default demo signing key.
 if (process.env.NODE_ENV === 'production' && (process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET) {
@@ -65,6 +67,7 @@ app.use('/api/alerts', authRequired, alertsRouter);
 app.use('/api/audit', authRequired, auditRouter);
 app.use('/api/compliance', authRequired, complianceRouter);
 app.use('/api/proposals', authRequired, proposalsRouter);
+app.use('/api/chat', authRequired, chatRouter);
 
 app.use((err: any, req: any, res: any, next: any) => {
   console.error(err);
@@ -73,4 +76,5 @@ app.use((err: any, req: any, res: any, next: any) => {
 
 app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`);
+  logProviderStartup();
 });

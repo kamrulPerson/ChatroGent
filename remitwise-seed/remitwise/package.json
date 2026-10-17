@@ -7,7 +7,8 @@
     "start": "tsx apps/api/src/server.ts",
     "dev": "tsx watch apps/api/src/server.ts",
     "seed": "tsx apps/api/src/seed.ts",
-    "test:unit": "tsx --test apps/api/test/unit.ts"
+    "test:unit": "tsx --test apps/api/test/unit.ts",
+    "test:agent": "tsx --test apps/api/test/agent.ts"
   },
   "dependencies": {
     "express": "4.19.2",
