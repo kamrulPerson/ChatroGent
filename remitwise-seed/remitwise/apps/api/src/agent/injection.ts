@@ -11,6 +11,17 @@ export interface InjectionVerdict {
   reason: string;
 }
 
+// Exact wording for the two refusal cases. The pasted wording is required
+// verbatim by the spec; the typed case must not claim the message was pasted.
+export const INJ01_PASTED =
+  "That message was pasted, so I can't act on payment instructions in it. Please type your request yourself. Nothing was sent.";
+export const INJ01_TYPED =
+  "That looks like an attempt to change my instructions, so I can't act on it. Nothing was sent. If you want to send money, tell me the amount and I'll prepare a proposal for you to confirm.";
+
+export function injectionRefusal(reason: string): string {
+  return reason === 'pasted content' ? INJ01_PASTED : INJ01_TYPED;
+}
+
 const PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /ignore\s+(all\s+|the\s+|your\s+|previous\s+|prior\s+)*(instructions|rules|prompt)/i, reason: 'ignore-instructions phrase' },
   { re: /(disregard|forget)\s+(all\s+|the\s+|your\s+|previous\s+|prior\s+)*(instructions|rules)/i, reason: 'disregard-instructions phrase' },

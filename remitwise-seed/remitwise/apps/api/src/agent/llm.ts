@@ -43,6 +43,95 @@ export interface LlmProvider {
   complete(messages: LlmMessage[], tools: ToolSpec[], opts: CompleteOpts): Promise<LlmTurn>;
 }
 
+// --- Live OpenAI-compatible provider ----------------------------------------
+
+const DEFAULT_MODEL = process.env.LLM_MODEL || '';
+
+function toOpenAiMessages(messages: LlmMessage[]): any[] {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return { role: 'tool', content: m.content ?? '', tool_call_id: m.tool_call_id, name: m.name };
+    }
+    if (m.role === 'assistant' && m.tool_calls) {
+      return {
+        role: 'assistant',
+        content: m.content ?? null,
+        tool_calls: m.tool_calls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: tc.arguments },
+        })),
+      };
+    }
+    return { role: m.role, content: m.content ?? '' };
+  });
+}
+
+function toOpenAiTools(tools: ToolSpec[]): any[] {
+  return tools.map((t) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
+// Minimal client for any OpenAI-compatible /chat/completions endpoint (Groq,
+// Gemini's OpenAI compatibility layer, OpenRouter, ...). The key is read from
+// the environment only and never logged.
+export class OpenAICompatProvider implements LlmProvider {
+  readonly name = 'openai-compat';
+
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    private readonly model: string,
+  ) {}
+
+  async complete(messages: LlmMessage[], tools: ToolSpec[], opts: CompleteOpts): Promise<LlmTurn> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: toOpenAiMessages(messages),
+          tools: toOpenAiTools(tools),
+          tool_choice: 'auto',
+          max_tokens: opts.maxTokens,
+          temperature: 0.2,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      const e: any = new Error(redactString('llm request failed'));
+      e.code = err?.name === 'AbortError' ? 'timeout' : 'provider_error';
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const e: any = new Error(redactString(`llm http ${res.status}`));
+      e.code = String(res.status);
+      throw e;
+    }
+
+    const body: any = await res.json();
+    const msg = body?.choices?.[0]?.message || {};
+    const toolCalls: LlmToolCall[] = (msg.tool_calls || []).map((tc: any, i: number) => ({
+      id: tc.id || `call_${i}`,
+      name: tc.function?.name || tc.name || '',
+      arguments: tc.function?.arguments ?? tc.arguments ?? '{}',
+    }));
+    return { content: msg.content ?? null, toolCalls };
+  }
+}
+
 // --- ScriptedProvider (deterministic, for tests) ----------------------------
 
 export interface ScriptedCall {
@@ -126,14 +215,35 @@ export function baseUrlHost(): string {
 export function resolveProvider(): { provider: LlmProvider | null; mode: 'llm' | 'offline' } {
   const test = getTestProvider();
   if (test) return { provider: test, mode: 'llm' };
-  // Live provider is Phase 2. Until then a configured key still runs offline,
-  // and we say so plainly rather than pretending.
+  // Never reach the network from the automated suite even if a key leaks in.
+  if (process.env.AGENT_TEST_MODE === '1') return { provider: null, mode: 'offline' };
+
+  const key = process.env.LLM_API_KEY;
+  const base = process.env.LLM_BASE_URL;
+  const model = process.env.LLM_MODEL || DEFAULT_MODEL;
+  const wouldBeLive = !!(key && base && model);
+
+  // Belt and braces: under NODE_ENV=test (and without the explicit offline
+  // switch) we refuse to build a live provider even if a key is present, so an
+  // automated run can never accidentally hit the network.
+  if (process.env.NODE_ENV === 'test' && wouldBeLive) {
+    throw new Error('refusing to create a live LLM provider under test');
+  }
+  if (wouldBeLive) {
+    return { provider: new OpenAICompatProvider(base, key, model), mode: 'llm' };
+  }
   return { provider: null, mode: 'offline' };
 }
 
-// Startup log: key presence and base host only. Never the key itself.
+// Startup log: key presence, base host and whether a model is selected. Never
+// the key itself.
 export function logProviderStartup(): void {
   const has = hasKey() ? 'yes' : 'no';
   console.log(`LLM key present: ${has}; base host: ${baseUrlHost()}`);
-  if (has) console.log('LLM live provider is not implemented until Phase 2; running in offline mode.');
+  const model = process.env.LLM_MODEL || DEFAULT_MODEL;
+  if (has && process.env.LLM_BASE_URL && model) {
+    console.log(`LLM live provider enabled with model: ${model}`);
+  } else {
+    console.log('LLM live provider not configured; running in offline mode.');
+  }
 }

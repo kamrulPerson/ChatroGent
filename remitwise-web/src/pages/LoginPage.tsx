@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api/client';
 
-export default function LoginPage({ onSuccess }: { onSuccess: () => void }) {
+export default function LoginPage({ onSuccess, notice }: { onSuccess: () => void; notice?: string }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -32,6 +32,7 @@ export default function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         <section className="card login" aria-label="Sign in">
           <h1>Sign in</h1>
           <p className="fine">Use a sandbox demo account provided with this build.</p>
+          {notice && <p className="msg notice" role="status">{notice}</p>}
           <form onSubmit={submit}>
             <label htmlFor="email">Email</label>
             <input id="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />

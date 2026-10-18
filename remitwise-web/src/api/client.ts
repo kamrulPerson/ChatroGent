@@ -11,6 +11,25 @@ export function setToken(t: string) {
   try { localStorage.setItem(TOKEN_KEY, t); } catch { /* ignore */ }
 }
 
+export function clearToken() {
+  token = '';
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+}
+
+// Fired when the API rejects our token (401). The app clears the session and
+// returns to the login screen with an explanation.
+export const AUTH_EXPIRED_EVENT = 'auth-expired';
+
+function expired() {
+  clearToken();
+  try { window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT)); } catch { /* ignore */ }
+}
+
+export function onAuthExpired(cb: () => void): () => void {
+  window.addEventListener(AUTH_EXPIRED_EVENT, cb);
+  return () => window.removeEventListener(AUTH_EXPIRED_EVENT, cb);
+}
+
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...opts,
@@ -19,6 +38,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    if (res.status === 401) expired();
     const err: any = new Error(body?.error || 'request_failed');
     err.status = res.status;
     err.body = body;
@@ -135,10 +155,14 @@ async function chatStream(
     body: JSON.stringify({ message, pasted }),
     signal,
   });
-  if (!res.ok || !res.body) {
-    const t = await res.text().catch(() => '');
-    throw new Error(t || `chat failed (${res.status})`);
+  if (res.status === 401) {
+    expired();
+    throw new Error('session_expired');
   }
+  if (!res.ok) {
+    throw new Error('chat_failed');
+  }
+  if (!res.body) throw new Error('chat_failed');
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';

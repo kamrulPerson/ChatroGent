@@ -37,7 +37,7 @@ r.post('/', async (req: any, res) => {
 r.post('/:id/confirm', async (req: any, res) => {
   try {
     const body = ConfirmSchema.parse(req.body);
-    const providedHash = (body.approvalHash ?? body.payloadHash ?? '').toLowerCase();
+    const providedHash = body.approvalHash.toLowerCase();
     const db = await getDb();
     const pid = new ObjectId(req.params.id);
     const p = await db.collection('proposals').findOne({ _id: pid, userId: uid(req) });

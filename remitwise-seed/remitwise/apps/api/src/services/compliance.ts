@@ -17,6 +17,9 @@ export interface RuleResult {
   passed: boolean;
   userMessage: string;
   reason: string;
+  // Structured figures for the plain-language mapper (e.g. the fee ceiling's
+  // fee, share and minimum workable amount). Never shown raw to the user.
+  detail?: Record<string, unknown>;
 }
 
 export interface ComplianceInput {
@@ -168,13 +171,13 @@ export async function buildContext(userId: string, input: ComplianceInput): Prom
   };
 }
 
-type Evaluated = { outcome: Outcome; status: RuleStatus; reason: string; userMessage?: string };
+type Evaluated = { outcome: Outcome; status: RuleStatus; reason: string; userMessage?: string; detail?: Record<string, unknown> };
 
 function pass(reason = 'ok'): Evaluated {
   return { outcome: 'pass', status: 'enforced', reason };
 }
-function fail(outcome: Outcome, reason: string, userMessage?: string): Evaluated {
-  return { outcome, status: 'enforced', reason, userMessage };
+function fail(outcome: Outcome, reason: string, userMessage?: string, detail?: Record<string, unknown>): Evaluated {
+  return { outcome, status: 'enforced', reason, userMessage, detail };
 }
 function skip(reason: string): Evaluated {
   return { outcome: 'pass', status: 'not_enforced', reason };
@@ -248,19 +251,32 @@ function evaluateRule(ruleId: string, ctx: ComplianceContext): Evaluated {
           'blocked',
           `amount ${ctx.amountUSD} below minimum ${policy.minTransferUSD}`,
           `The smallest transfer I can prepare is ${policy.minTransferUSD} USD. Please send a larger amount.`,
+          { kind: 'below_minimum', minUsd: policy.minTransferUSD },
         );
       }
       if (ctx.route.feeBDT == null || !ctx.fx.usdPerBdt) {
         return skip('no route fee or usd rate to estimate fees');
       }
+      const spreadPct = ctx.route.spreadPct ?? 0;
       const feeUSD = ctx.route.feeBDT / ctx.fx.usdPerBdt;
-      const totalPct = (feeUSD / ctx.amountUSD) * 100 + (ctx.route.spreadPct ?? 0);
+      const totalPct = (feeUSD / ctx.amountUSD) * 100 + spreadPct;
       if (totalPct >= policy.maxFeePct) {
-        return fail(
-          'blocked',
-          `fee+spread ${totalPct.toFixed(1)}% >= maxFeePct ${policy.maxFeePct}%`,
-          `Fees and FX margin on this transfer add up to ${totalPct.toFixed(1)}% of the amount, above the ${policy.maxFeePct}% limit. Send a larger amount or pick a cheaper route.`,
-        );
+        // The fee share is too large for this route, not a below-minimum
+        // refusal. Give the mapper the fee, the share and the smallest amount
+        // that would clear the ceiling on this route.
+        const headroomPct = policy.maxFeePct - spreadPct;
+        const minWorkableUsd = headroomPct > 0 ? feeUSD / (headroomPct / 100) : null;
+        return fail('blocked', `fee+spread ${totalPct.toFixed(1)}% >= maxFeePct ${policy.maxFeePct}%`, undefined, {
+          kind: 'fee_ceiling',
+          feeBdt: ctx.route.feeBDT,
+          feeUsd: Number(feeUSD.toFixed(2)),
+          spreadPct,
+          totalPct: Number(totalPct.toFixed(1)),
+          maxFeePct: policy.maxFeePct,
+          usdPerBdt: ctx.fx.usdPerBdt,
+          minWorkableUsd: minWorkableUsd != null ? Number(minWorkableUsd.toFixed(2)) : null,
+          minWorkableBdt: minWorkableUsd != null ? Math.ceil(minWorkableUsd * (ctx.fx.usdPerBdt as number)) : null,
+        });
       }
       return pass();
     }
@@ -380,6 +396,7 @@ export async function checkCompliance(userId: string, input: ComplianceInput): P
       passed: ev.outcome === 'pass',
       userMessage: ev.outcome === 'pass' ? '' : renderMessage(def.userMessage || '', ctx, ev),
       reason: ev.reason,
+      detail: ev.detail,
     });
   }
 

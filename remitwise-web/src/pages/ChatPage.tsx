@@ -11,9 +11,9 @@ import RouteCard from '../components/RouteCard';
 import ConfirmCard from '../components/ConfirmCard';
 
 const suggestions = [
-  'Send 8000 USD tuition to my university in Malaysia',
-  'When should I convert my taka to ringgit?',
-  'How do I build credit while studying abroad?',
+  'Dad wants to send ৳2,40,000 for my tuition. What is the best way?',
+  'When should I convert my taka to ringgit, and can you set an alert?',
+  'How do I build credit while studying in Malaysia?',
 ];
 
 function parseAmount(input: string): number | null {
@@ -165,6 +165,7 @@ export default function ChatPage() {
       const ref = 'RW-' + Math.random().toString(36).slice(2, 8).toUpperCase();
       push({ kind: 'receipt', id: uid(), receipt: { ref, amountBDT: p.amountBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime() } });
       addTransfer({ id: ref, date: new Date().toISOString().slice(0, 10), recipient: p.recipient, amountBDT: p.amountBDT, status: 'Pending' });
+      push({ kind: 'agent', id: uid(), text: `Done. Your receipt ${ref} is above — keep it for your records.` });
       setMode('T1');
       setBusy(false);
       return;
@@ -174,8 +175,13 @@ export default function ChatPage() {
       const res = await api.confirmProposal(p.id, p.approvalHash, 'user_typed');
       push({ kind: 'receipt', id: uid(), receipt: { ref: res.receiptId, amountBDT: p.amountBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime() } });
       addTransfer({ id: res.receiptId, date: new Date().toISOString().slice(0, 10), recipient: p.recipient, amountBDT: p.amountBDT, status: 'Completed' });
+      push({ kind: 'agent', id: uid(), text: `Done. Your receipt ${res.receiptId} is above — keep it for your records.` });
     } catch (e: any) {
-      push({ kind: 'notice', id: uid(), text: `Could not confirm the payment: ${e?.message || e}` });
+      if (e?.status === 401) {
+        push({ kind: 'notice', id: uid(), text: 'Your session expired. Please log in again.' });
+      } else {
+        push({ kind: 'notice', id: uid(), text: 'That payment could not be confirmed. Nothing was sent. Please try again.' });
+      }
       patch((prev) => prev.map((it) => (it.kind === 'proposal' && it.id === p.id ? { ...it, proposal: { ...it.proposal, status: 'failed' } } : it)));
     } finally {
       setMode('T1');
@@ -221,8 +227,8 @@ export default function ChatPage() {
   }
 
   function injection() {
-    push({ kind: 'notice', id: uid(), text: 'Blocked by rule INJ_01. That instruction came from pasted text, not from you, so I did not act on it. Nothing was sent.' });
-    logAudit({ event: 'Rule INJ_01 triggered', tier: 'SYS', outcome: 'Blocked and logged' });
+    push({ kind: 'notice', id: uid(), text: "That message was pasted, so I can't act on payment instructions in it. Please type your request yourself. Nothing was sent." });
+    logAudit({ event: 'Injection blocked', tier: 'SYS', outcome: 'Blocked and logged' });
   }
 
   async function send(raw: string) {
@@ -245,7 +251,11 @@ export default function ChatPage() {
       else if (/(send|tuition|pay|remit)/.test(l)) await remitFlow(t);
       else push({ kind: 'agent', id: uid(), text: 'I can help you send a tuition payment, decide when to convert, or plan how to build credit abroad. Which one would you like?' });
     } catch (e: any) {
-      push({ kind: 'notice', id: uid(), text: `Could not reach the assistant: ${e?.message || e}` });
+      if (e?.status === 401 || e?.message === 'session_expired') {
+        push({ kind: 'notice', id: uid(), text: 'Your session expired. Please log in again.' });
+      } else {
+        push({ kind: 'notice', id: uid(), text: 'The assistant is unavailable right now. Nothing was sent. Please try again.' });
+      }
     } finally {
       setBusy(false);
     }
