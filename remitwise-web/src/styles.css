@@ -87,6 +87,13 @@ tr.best { background: var(--green-soft); }
 .facts dd { margin: 0; }
 .checks { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 3px; font-size: 13.5px; }
 .checks li span { color: var(--green); font-weight: 700; }
+.rulesblock { margin-bottom: 10px; }
+.checkline { margin: 0 0 8px; font-size: 13.5px; }
+.checks .rule.bad span { color: #b3261e; }
+.checks .rule.warn span { color: #a15c00; }
+.checks .rule.muted { color: var(--muted); }
+.checks summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.checks details ul, details.checks ul { margin-top: 6px; }
 .actions { display: flex; gap: 10px; justify-content: flex-end; margin-bottom: 8px; }
 .status { margin: 0 0 8px; font-weight: 600; }
 .status.confirmed { color: var(--green); }

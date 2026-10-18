@@ -3,7 +3,7 @@ import ChatPage from './pages/ChatPage';
 import DashboardPage from './pages/DashboardPage';
 import AuditPage from './pages/AuditPage';
 import LoginPage from './pages/LoginPage';
-import { autoLogin, hasToken, useMock } from './api/client';
+import { autoLogin, hasToken, onAuthExpired, useMock } from './api/client';
 
 type Page = 'chat' | 'dashboard' | 'audit';
 const nav: { id: Page; label: string }[] = [
@@ -16,6 +16,7 @@ export default function App() {
   const [page, setPage] = useState<Page>('chat');
   const [authed, setAuthed] = useState(useMock || hasToken());
   const [checking, setChecking] = useState(!useMock && !hasToken());
+  const [notice, setNotice] = useState('');
 
   // Optional sandbox convenience: when VITE_DEMO_AUTOLOGIN=true and credentials
   // are present in the local .env, sign in automatically. Otherwise the login
@@ -30,6 +31,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // If the API rejects our token, clear the session and explain on the login page.
+  useEffect(() => onAuthExpired(() => {
+    setNotice('Your session expired. Please log in again.');
+    setAuthed(false);
+  }), []);
+
   if (checking) {
     return (
       <div className="shell">
@@ -39,7 +46,7 @@ export default function App() {
     );
   }
 
-  if (!useMock && !authed) return <LoginPage onSuccess={() => setAuthed(true)} />;
+  if (!useMock && !authed) return <LoginPage notice={notice} onSuccess={() => { setNotice(''); setAuthed(true); }} />;
 
   return (
     <div className="shell">

@@ -13,6 +13,11 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
   const p = proposal;
   const pending = p.status === 'pending';
   const receive = p.route.net == null ? 'No quote' : fmtMoney(p.route.net, p.route.currency);
+  const rules = p.rules || [];
+  const total = rules.length;
+  const notApplicable = rules.filter((r) => r.status === 'not_applicable').length;
+  const passed = rules.filter((r) => r.status === 'enforced' && r.passed).length;
+  const failed = rules.filter((r) => r.status === 'enforced' && !r.passed);
   return (
     <section className="card confirm" aria-label="Payment confirmation">
       <header className="confirmhead">
@@ -28,24 +33,42 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
         <div><dt>Arrives in</dt><dd>{p.route.etaDays} {p.route.etaDays === 1 ? 'day' : 'days'}</dd></div>
       </dl>
       {p.rules ? (
-        <ul className="checks">
-          {p.rules.map((r) => {
-            const s = ruleStatusLabel(r);
-            return (
-              <li key={r.ruleId} className={'rule ' + s.tone}>
-                <span aria-hidden="true">{s.mark}</span> <code>{r.ruleId}</code> {s.label}
-              </li>
-            );
-          })}
-        </ul>
+        <div className="rulesblock">
+          <p className="checkline">
+            <strong>{passed} of {total}</strong> checks passed
+            {notApplicable > 0 && <> ({notApplicable} not applicable)</>}.
+          </p>
+          {failed.length > 0 && (
+            <ul className="checks">
+              {failed.map((r) => (
+                <li key={r.ruleId} className="rule bad">
+                  <span aria-hidden="true">×</span> {r.userMessage || 'That check did not pass.'}
+                </li>
+              ))}
+            </ul>
+          )}
+          <details className="checks">
+            <summary>See all {total} checks</summary>
+            <ul>
+              {rules.map((r) => {
+                const s = ruleStatusLabel(r);
+                return (
+                  <li key={r.ruleId} className={'rule ' + s.tone}>
+                    <span aria-hidden="true">{s.mark}</span> {r.userMessage || s.label}
+                  </li>
+                );
+              })}
+            </ul>
+          </details>
+        </div>
       ) : (
         <ul className="checks">
           {p.checks.map((c) => (<li key={c}><span aria-hidden="true">✓</span> {c}</li>))}
         </ul>
       )}
-      {p.hash && (
+      {p.approvalHash && (
         <p className="fine">
-          Approval hash <code>{p.hash.slice(0, 16)}…</code>. The confirmation is single-use and bound to this exact proposal.
+          Approval hash <code>{p.approvalHash.slice(0, 16)}…</code>. The confirmation is single-use and bound to this exact proposal.
         </p>
       )}
       {pending ? (

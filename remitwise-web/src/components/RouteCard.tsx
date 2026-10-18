@@ -1,7 +1,17 @@
 import type { Route } from '../types';
 import { fmtBDT, fmtMoney } from '../format';
 
-export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId: string }) {
+export default function RouteCard({
+  routes,
+  bestId,
+  source,
+  snapshot,
+}: {
+  routes: Route[];
+  bestId: string;
+  source?: string;
+  snapshot?: string;
+}) {
   return (
     <div className="card routes">
       <div className="tablewrap">
@@ -10,6 +20,7 @@ export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId:
             <tr>
               <th scope="col">Route</th>
               <th scope="col" className="num">Fee</th>
+              <th scope="col" className="num">FX margin</th>
               <th scope="col" className="num">Arrives</th>
               <th scope="col" className="num">They receive</th>
             </tr>
@@ -19,10 +30,11 @@ export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId:
               <tr key={r.id} className={r.id === bestId && r.quotable ? 'best' : ''}>
                 <th scope="row">
                   {r.name}
-                  {r.id === bestId && r.quotable && <span className="flag">Lowest total cost</span>}
+                  {r.id === bestId && r.quotable && <span className="flag">Best payout</span>}
                   <small>{r.note}</small>
                 </th>
-                <td className="num">{fmtBDT(r.feeBDT)}<small>{r.spreadPct.toFixed(1)}% FX margin</small></td>
+                <td className="num">{fmtBDT(r.feeBDT)}</td>
+                <td className="num">{r.spreadPct.toFixed(1)}%</td>
                 <td className="num">{r.etaDays} {r.etaDays === 1 ? 'day' : 'days'}</td>
                 <td className="num strong">{r.net == null ? 'No quote' : fmtMoney(r.net, r.currency)}</td>
               </tr>
@@ -30,7 +42,11 @@ export default function RouteCard({ routes, bestId }: { routes: Route[]; bestId:
           </tbody>
         </table>
       </div>
-      <p className="fine">Sample data from the project dataset. Total cost = fee plus the hidden FX margin.</p>
+      <p className="fine">
+        {source ? `Data source: ${source}` : 'Data source: Sample data (illustrative)'}
+        {snapshot ? `, snapshot ${snapshot}. ` : '. '}
+        Sorted by what the recipient receives (highest first).
+      </p>
     </div>
   );
 }

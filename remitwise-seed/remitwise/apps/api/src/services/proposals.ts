@@ -5,6 +5,7 @@ import { policy } from '../config.js';
 import { audit } from '../audit.js';
 import { checkCompliance, type ComplianceInput, type RuleResult } from './compliance.js';
 import { CORRIDOR_META, corridorRate, computeQuote } from './convert.js';
+import { rankRoutes } from './routes.js';
 
 // Proposals key on the ObjectId form of the user id so the compliance engine
 // (velocity / anomaly / daily-cap reads) and the dashboard queries can find
@@ -34,7 +35,7 @@ export type CreateProposalResult =
   | {
       ok: true;
       id: string;
-      payloadHash: string;
+      approvalHash: string;
       expiresAt: Date;
       quote: any;
       ruleResults: any[];
@@ -56,7 +57,7 @@ const round2 = (n: number) => Number(n.toFixed(2));
 // route (/api/proposals) and by the agent's propose_payment tool so behaviour
 // and audit output cannot drift.
 export async function createProposal(userId: string, input: ComplianceInput & { routeProvider?: string }): Promise<
-  | { ok: true; id: string; payloadHash: string; expiresAt: Date; quote: any; ruleResults: any[]; notEnforced: string[] }
+  | { ok: true; id: string; approvalHash: string; expiresAt: Date; quote: any; ruleResults: any[]; notEnforced: string[] }
   | { ok: false; status: number; body: any }
 > {
   const decision = await checkCompliance(userId, input);
@@ -118,9 +119,18 @@ export async function createProposal(userId: string, input: ComplianceInput & { 
     return { ok: false, status: 400, body: { error: 'no_rate', message: `no rate for this corridor (${input.corridor})` } };
   }
 
+  // A1: when the caller did not name a provider, use the top-ranked route so the
+  // proposal, the route card and the trace summary always agree. rankRoutes
+  // ranks by net received, so "best" is unambiguous.
+  let routeProvider = input.routeProvider;
+  if (!routeProvider) {
+    const ranked = await rankRoutes(input.corridor, input.amountUSD);
+    routeProvider = ranked?.routes[0]?.provider;
+  }
+
   const route = await db.collection('routes').findOne({
     corridor: input.corridor,
-    ...(input.routeProvider ? { provider: input.routeProvider } : {}),
+    ...(routeProvider ? { provider: routeProvider } : {}),
   });
   const feeBDT = Number(route?.feeBDT ?? 2500);
   const spreadPct = Number(route?.spreadPct ?? 1.5);
@@ -196,7 +206,7 @@ export async function createProposal(userId: string, input: ComplianceInput & { 
   return {
     ok: true,
     id: ins.insertedId.toString(),
-    payloadHash: doc.payloadHash,
+    approvalHash: doc.payloadHash,
     expiresAt: doc.expiresAt,
     quote,
     ruleResults: decision.ruleResults,

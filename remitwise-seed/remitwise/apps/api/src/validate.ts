@@ -43,11 +43,13 @@ export const ProposeSchema = z.object({
   ...instructionFields,
 }).strict();
 
-export const ConfirmSchema = z.object({
-  payloadHash: z.string().regex(/^[0-9a-f]{64}$/i),
-  instructionSource: z.enum(instructionSources).optional(),
-  note: z.string().max(2000).optional(),
-}).strict();
+export const ConfirmSchema = z
+  .object({
+    approvalHash: z.string().regex(/^[0-9a-f]{64}$/i),
+    instructionSource: z.enum(instructionSources).optional(),
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
 
 export const AlertSchema = z.object({
   pair: z.string().min(3).max(40),

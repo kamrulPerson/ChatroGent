@@ -5,7 +5,7 @@
     "description": "Payment instruction must come from the authenticated user, not pasted or untrusted text",
     "check": "ctx.instructionSource == 'user_typed'",
     "onFail": "blocked",
-    "userMessage": "That instruction came from pasted text, not from you, so I can't act on it.",
+    "userMessage": "That message was pasted, so I can't act on payment instructions in it. Please type your request yourself. Nothing was sent.",
     "basis": "product_policy",
     "source": "RemitWise security design (sandbox)",
     "dateChecked": "2026-10-15",

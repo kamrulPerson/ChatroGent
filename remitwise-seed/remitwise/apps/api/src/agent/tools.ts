@@ -8,8 +8,12 @@ import { getDb } from '../db.js';
 import { ObjectId } from 'mongodb';
 import { checkCompliance } from '../services/compliance.js';
 import { createProposal } from '../services/proposals.js';
-import { CORRIDOR_META, corridorRate, computeQuote, latestRate } from '../services/convert.js';
+import { audit } from '../audit.js';
+import { CORRIDOR_META, latestRate } from '../services/convert.js';
+import { rankRoutes } from '../services/routes.js';
 import { corridors } from '../validate.js';
+import { fmtAmount, fmtMoney } from './format.js';
+import { explainBlock } from './explain.js';
 import type { ToolSpec } from './llm.js';
 
 export type Tier = 'T1' | 'T2' | 'T3';
@@ -25,14 +29,35 @@ export const TOOL_TIERS: Record<string, Tier> = {
   execute_payment: 'T3',
 };
 
-// Phase 1 implements the tools needed for Flow 1 (plus fx_window, a T1 read).
-// set_alert and build_credit_plan are Phase 2 and are intentionally NOT in the
-// allowlist yet, so calling them returns an error result.
-const ALLOWLIST = new Set(['get_balance', 'compare_routes', 'check_compliance', 'fx_window', 'propose_payment', 'execute_payment']);
+// Phase 1 implemented Flow 1 (plus fx_window, a T1 read). Phase 2 adds the
+// credit-plan builder and alerts (both T2).
+const ALLOWLIST = new Set([
+  'get_balance',
+  'compare_routes',
+  'check_compliance',
+  'fx_window',
+  'build_credit_plan',
+  'propose_payment',
+  'set_alert',
+  'execute_payment',
+]);
 
 const corridorEnum = z.enum(corridors as unknown as [string, ...string[]]);
 const currencyEnum = z.enum(['BDT', 'USD']);
 const amountField = z.object({ amount: z.number().positive(), currency: currencyEnum.default('USD') });
+
+// The beneficiary is DERIVED on the server, never supplied by the model:
+// tuition, fees and insurance go to the institution on the student file;
+// living and incidental costs go to the student card. (Requirement 2.)
+const INSTITUTION_PURPOSES = ['tuition', 'insurance', 'admission_fee', 'advance_fee'];
+const STUDENT_CARD_PURPOSES = ['living', 'incidental'];
+export function deriveBeneficiaryType(purpose: string | undefined, student: any): string | undefined {
+  if (student && typeof student.beneficiaryType === 'string') return student.beneficiaryType;
+  if (!purpose) return undefined;
+  if (INSTITUTION_PURPOSES.includes(purpose)) return 'institution';
+  if (STUDENT_CARD_PURPOSES.includes(purpose)) return 'student_card';
+  return undefined;
+}
 
 const Schemas: Record<string, z.ZodTypeAny> = {
   get_balance: z.object({}).strict(),
@@ -41,7 +66,6 @@ const Schemas: Record<string, z.ZodTypeAny> = {
     .extend({
       corridor: corridorEnum,
       purpose: z.string().max(40).optional(),
-      beneficiaryType: z.string().max(40).optional(),
       coveragePeriodMonths: z.number().int().positive().max(120).optional(),
       isFirstRelease: z.boolean().optional(),
     })
@@ -52,13 +76,28 @@ const Schemas: Record<string, z.ZodTypeAny> = {
       corridor: corridorEnum,
       recipient: z.string().max(120).optional(),
       purpose: z.string().max(40).optional(),
-      beneficiaryType: z.string().max(40).optional(),
       coveragePeriodMonths: z.number().int().positive().max(120).optional(),
       isFirstRelease: z.boolean().optional(),
       routeProvider: z.string().min(1).max(120).optional(),
     })
     .strict(),
   execute_payment: z.object({ proposalId: z.string().min(1).max(64) }).strict(),
+  build_credit_plan: z
+    .object({
+      corridor: corridorEnum.optional(),
+      totalAmount: z.number().positive().optional(),
+      currency: currencyEnum.optional(),
+    })
+    .strict(),
+  set_alert: z
+    .object({
+      pair: z.string().min(3).max(40),
+      target: z.number().positive(),
+      fallbackDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      corridor: corridorEnum.optional(),
+    })
+    .strict(),
 };
 
 export interface ToolResult {
@@ -120,72 +159,70 @@ async function getBalance(userId: string): Promise<ToolResult> {
   const bals = await db.collection('accounts').find({ userId: new ObjectId(userId) }).toArray();
   const balances = bals.map((b: any) => ({ currency: b.currency, amount: b.balance }));
   const notable = balances.find((b) => b.currency === 'BDT') || balances[0];
-  return { status: 'done', summary: notable ? `${notable.currency} ${notable.amount}` : 'no accounts', data: { balances } };
+  return { status: 'done', summary: notable ? fmtAmount(notable.amount, notable.currency) : 'no accounts', data: { balances } };
+}
+
+function routeDataLabel(illustrative: boolean, dateCollected?: string): string {
+  return illustrative ? 'Sample data (illustrative)' : `routes dataset (${dateCollected || 'n/a'})`;
 }
 
 async function compareRoutes(args: any): Promise<ToolResult> {
-  const conv = await corridorRate(args.corridor);
-  if (!conv) return { status: 'blocked', summary: `No rate for ${args.corridor}`, data: { error: 'no_rate', corridor: args.corridor } };
   const usdRes = await amountToUsd(args.amount, args.currency);
   if (!usdRes.ok) return { status: 'error', summary: usdRes.error, data: { error: 'no_rate' } };
-  const db = await getDb();
-  const rows = await db.collection('routes').find({ corridor: args.corridor }).toArray();
-  const routes = rows
-    .map((rr: any) => {
-      const q = computeQuote(usdRes.usd, conv.usdPerBdt, conv.rate, Number(rr.feeBDT), Number(rr.spreadPct), conv.dest, conv.pair);
-      return {
-        id: rr.provider,
-        name: rr.provider,
-        provider: rr.provider,
-        corridor: args.corridor,
-        currency: conv.dest,
-        pair: conv.pair,
-        rate: conv.rate,
-        feeBDT: Number(rr.feeBDT),
-        spreadPct: Number(rr.spreadPct),
-        etaDays: rr.etaDays,
-        dataType: rr.dataType,
-        dateCollected: rr.dateCollected,
-        gross: Number(q.gross.toFixed(2)),
-        net: q.quotable ? Number(q.net.toFixed(2)) : null,
-        quotable: q.quotable,
-        reason: q.quotable ? null : 'fee_and_margin_exceed_amount',
-        totalCostPct: Number(((Number(rr.feeBDT) / conv.usdPerBdt / usdRes.usd) * 100 + Number(rr.spreadPct)).toFixed(2)),
-        note: rr.dataType === 'estimated' ? 'estimated' : '',
-      };
-    })
-    .sort((a: any, b: any) => (b.net ?? -Infinity) - (a.net ?? -Infinity));
+  const ranked = await rankRoutes(args.corridor, usdRes.usd);
+  if (!ranked) return { status: 'blocked', summary: `No rate for ${args.corridor}`, data: { error: 'no_rate', corridor: args.corridor } };
+  const { conv, routes, illustrative } = ranked;
   if (!routes.length) return { status: 'error', summary: `No routes for ${args.corridor}`, data: { error: 'no_routes' } };
   const best = routes[0];
+  const source = routeDataLabel(illustrative, best.dateCollected);
   return {
     status: 'done',
-    summary: `${routes.length} route(s); best ${best.name} nets ${best.currency} ${best.net}`,
-    data: { corridor: args.corridor, currency: conv.dest, pair: conv.pair, source: 'routes dataset', dateCollected: best.dateCollected, routes },
-    card: { kind: 'routes', routes, bestId: best.id },
+    summary: `${routes.length} route(s); best ${best.name} nets ${fmtAmount(best.net ?? 0, best.currency)}`,
+    data: { corridor: args.corridor, currency: conv.dest, pair: conv.pair, source, dateCollected: best.dateCollected, illustrative, routes },
+    card: { kind: 'routes', routes, bestId: best.id, source, snapshot: best.dateCollected, illustrative },
   };
 }
 
 async function checkComplianceTool(userId: string, args: any, instructionSource: string): Promise<ToolResult> {
   const usdRes = await amountToUsd(args.amount, args.currency);
   if (!usdRes.ok) return { status: 'error', summary: usdRes.error, data: { error: 'no_rate' } };
+  const db = await getDb();
+  const student = await db.collection('student_files').findOne({ userId: new ObjectId(userId) });
   const decision = await checkCompliance(userId, {
     corridor: args.corridor,
     amountUSD: usdRes.usd,
     purpose: args.purpose,
-    beneficiaryType: args.beneficiaryType,
+    beneficiaryType: deriveBeneficiaryType(args.purpose, student),
     coveragePeriodMonths: args.coveragePeriodMonths,
     isFirstRelease: args.isFirstRelease,
     instructionSource,
   });
-  const failed = decision.ruleResults.filter((r) => !r.passed && r.status === 'enforced').map((r) => r.ruleId);
+  const failed = decision.ruleResults.filter((r) => !r.passed && r.status === 'enforced');
+  const failures = failed.map((r) => ({
+    ruleId: r.ruleId,
+    outcome: r.outcome,
+    userMessage: r.userMessage,
+    reason: r.reason,
+    detail: r.detail,
+  }));
+  const passedCount = decision.ruleResults.filter((r) => r.passed && r.status === 'enforced').length;
+  const total = decision.ruleResults.length;
+  // Human summary only; raw rule IDs live in the Activity log, never in chat.
+  // A block is written by the same plain-language mapper the offline flow uses.
+  const summary =
+    decision.decision === 'pass' ? `${passedCount} of ${total} checks passed` : explainBlock(failures);
   return {
     status: decision.decision === 'pass' ? 'done' : 'blocked',
-    summary: decision.decision + (failed.length ? ` (${failed.join(', ')})` : ''),
+    summary,
     data: {
       decision: decision.decision,
-      failedRules: failed,
+      failedRules: failed.map((r) => r.ruleId),
+      failures,
       notEnforced: decision.notEnforced,
       rulesVersion: decision.rulesVersion,
+      passedCount,
+      total,
+      messages: failed.map((r) => r.userMessage).filter(Boolean),
     },
   };
 }
@@ -234,6 +271,114 @@ function ruleView(r: any) {
   return { ruleId: r.ruleId, outcome: r.outcome, status: r.status, passed: r.passed, userMessage: r.userMessage, reason: r.reason };
 }
 
+const CREDIT_MILESTONES = [1, 3, 6, 12];
+
+// T2: builds a savings/remittance plan with milestones at 1, 3, 6 and 12 months.
+// Malaysia (BD-MY) gets a per-month table; other corridors get general guidance
+// behind a clear "not in the supported list" notice. It never opens an account
+// or submits anything.
+async function buildCreditPlan(args: any): Promise<ToolResult> {
+  const corridor = args.corridor || 'BD-MY';
+  const currency = args.currency || 'BDT';
+  const total = typeof args.totalAmount === 'number' ? args.totalAmount : null;
+  const supported = corridor === 'BD-MY';
+  const monthly = total !== null ? total / 12 : null;
+  const milestones = CREDIT_MILESTONES.map((m) => ({
+    month: m,
+    cumulative: monthly !== null ? Number((monthly * m).toFixed(2)) : null,
+    remaining: monthly !== null && total !== null ? Number((total - monthly * m).toFixed(2)) : null,
+  }));
+  const dateCollected = new Date().toISOString().slice(0, 10);
+
+  const data: any = {
+    corridor,
+    currency,
+    totalAmount: total,
+    monthlySetAside: monthly !== null ? Number(monthly.toFixed(2)) : null,
+    milestones,
+    supported,
+    notFinancialAdvice: true,
+    canOpenAccount: false,
+    canSubmitApplication: false,
+    disclaimer: 'This is guidance, not financial advice. I cannot open an account or submit an application for you.',
+  };
+  if (supported) {
+    data.verified = false;
+    data.source = 'Sample data (illustrative)';
+    data.dateCollected = dateCollected;
+    data.tableNote = 'Monthly set-aside assumes an even split across 12 months.';
+  } else {
+    data.note = `I don't have a verified plan for ${corridor}; it isn't in the supported list yet. Here are general principles: save in the currency you will spend, keep the money separate from daily spending, and review progress each month.`;
+  }
+
+  const summary =
+    total === null
+      ? 'Tell me the total you are planning for and I will lay out the monthly milestones.'
+      : supported
+        ? `Plan for ${fmtAmount(total, currency)}: set aside about ${fmtAmount(monthly || 0, currency)} a month. Milestones at 1, 3, 6 and 12 months. Guidance only; not financial advice.`
+        : `I can only give general principles for ${corridor} — it isn't in the supported list yet. Guidance only; not financial advice.`;
+  return { status: 'done', summary, data };
+}
+
+// T2: creates a PENDING alert. Alerts are never activated here; activation is a
+// UI action. For a deadline, the fallback date must leave room for the route
+// ETA plus a one-day buffer, so an alert can never fire after the deadline.
+async function setAlert(userId: string, args: any): Promise<ToolResult> {
+  const target = Number(args.target);
+  if (!(target > 0)) {
+    return { status: 'error', summary: 'The alert target must be greater than zero.', data: { error: 'invalid_target' } };
+  }
+  const fallbackDate = args.fallbackDate;
+  const deadline: string | undefined = args.deadline;
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+
+  let etaDays = 4;
+  const db = await getDb();
+  const corridor = args.corridor || 'BD-MY';
+  const routeRows = await db.collection('routes').find({ corridor }).toArray();
+  if (routeRows.length) etaDays = Math.max(...routeRows.map((r: any) => Number(r.etaDays) || 0)) || 4;
+
+  if (deadline && iso.test(deadline) && iso.test(fallbackDate)) {
+    const latest = new Date(deadline);
+    latest.setDate(latest.getDate() - etaDays - 1);
+    if (new Date(fallbackDate) > latest) {
+      return {
+        status: 'error',
+        summary: `That alert would leave too little time: with a ${etaDays}-day route, set the fallback by ${latest.toISOString().slice(0, 10)} so the money still arrives before ${deadline}.`,
+        data: { error: 'fallback_too_late', latestFallbackDate: latest.toISOString().slice(0, 10), etaDays, deadline },
+      };
+    }
+  }
+
+  const now = new Date();
+  const doc = {
+    userId: new ObjectId(userId),
+    pair: args.pair,
+    corridor,
+    target,
+    fallbackDate,
+    deadline: deadline || null,
+    status: 'pending',
+    active: false,
+    createdAt: now,
+  };
+  const ins = await db.collection('alerts').insertOne(doc);
+  await audit({
+    event: 'alert_created',
+    tier: 'T2',
+    outcome: 'pass',
+    decision: 'pass',
+    userId,
+    inputs: { pair: args.pair, target, fallbackDate, deadline: deadline || null },
+  });
+  const until = deadline ? `, and no later than ${fallbackDate} so it can still arrive before ${deadline}` : '';
+  return {
+    status: 'done',
+    summary: `Alert created (pending): watch ${args.pair} for ${target}${until}. Turn it on in Alerts when you are ready. I can't activate it for you.`,
+    data: { alertId: ins.insertedId.toString(), status: 'pending', active: false, pair: args.pair, target, fallbackDate, deadline: deadline || null },
+  };
+}
+
 async function proposePayment(userId: string, args: any, instructionSource: string): Promise<ToolResult> {
   const db = await getDb();
   const student = await db.collection('student_files').findOne({ userId: new ObjectId(userId) });
@@ -241,72 +386,125 @@ async function proposePayment(userId: string, args: any, instructionSource: stri
   const usdRes = await amountToUsd(args.amount, args.currency);
   if (!usdRes.ok) return { status: 'error', summary: usdRes.error, data: { error: 'no_rate' } };
 
+  // A1: unless the user named a provider, use the same top-ranked route that
+  // compare_routes shows, so the card, trace and proposal can never disagree.
+  let routeProvider = args.routeProvider as string | undefined;
+  let bestProvider: string | undefined;
+  const ranked = await rankRoutes(args.corridor, usdRes.usd);
+  if (ranked && ranked.routes.length) bestProvider = ranked.routes[0].provider;
+  if (!routeProvider) routeProvider = bestProvider;
+
+  const purpose = args.purpose || 'tuition';
   const res = await createProposal(userId, {
     corridor: args.corridor,
     amountUSD: usdRes.usd,
-    purpose: args.purpose || 'tuition',
-    beneficiaryType: args.beneficiaryType,
+    purpose,
+    beneficiaryType: deriveBeneficiaryType(purpose, student),
     coveragePeriodMonths: args.coveragePeriodMonths,
     isFirstRelease: args.isFirstRelease,
-    routeProvider: args.routeProvider,
+    routeProvider,
     instructionSource,
   });
 
   if (!res.ok) {
     const blocked = res.body?.decision === 'blocked' || res.body?.error === 'compliance_failed';
-    const failed = (res.body?.ruleResults || []).filter((r: any) => !r.passed && r.status === 'enforced').map((r: any) => r.ruleId);
+    const failedResults = (res.body?.ruleResults || []).filter((r: any) => !r.passed && r.status === 'enforced');
+    const failures = failedResults.map((r: any) => ({
+      ruleId: r.ruleId,
+      outcome: r.outcome,
+      userMessage: r.userMessage,
+      reason: r.reason,
+      detail: r.detail,
+    }));
+    const messages = failedResults.map((r: any) => r.userMessage).filter(Boolean);
+    const plain = failures.length ? explainBlock(failures) : res.body?.message || 'That payment could not be prepared.';
     return {
       status: blocked ? 'blocked' : 'error',
-      summary: res.body?.error || 'proposal refused' + (failed.length ? ` (${failed.join(', ')})` : ''),
-      data: { error: res.body?.error, decision: res.body?.decision, failedRules: failed, message: res.body?.message },
+      summary: plain,
+      data: {
+        error: res.body?.error,
+        decision: res.body?.decision,
+        failedRules: failedResults.map((r: any) => r.ruleId),
+        failures,
+        message: res.body?.message,
+        messages,
+      },
     };
   }
 
   const q = res.quote;
+  const illustrative = ranked ? ranked.illustrative : true;
+  const source = routeDataLabel(illustrative, q.dateCollected);
+  const routeIsBest = !bestProvider || q.provider === bestProvider;
   const route = {
     id: q.provider,
     name: q.provider,
+    provider: q.provider,
+    corridor: args.corridor,
+    currency: q.currency,
+    pair: q.pair,
+    rate: q.rate,
     feeBDT: q.feeBDT,
     spreadPct: q.spreadPct,
     etaDays: q.etaDays,
-    note: q.dataType === 'estimated' ? 'estimated' : '',
-    currency: q.currency,
+    dataType: q.dataType,
+    dateCollected: q.dateCollected,
+    gross: q.gross,
     net: q.net,
+    netUsd: q.netUsd,
+    sendBDT: q.sendBDT,
     quotable: true,
     reason: null,
     totalCostPct: Number(((q.feeBDT / q.usdPerBdt / usdRes.usd) * 100 + q.spreadPct).toFixed(2)),
+    note: q.dataType === 'estimated' ? 'estimated' : '',
+    isBest: routeIsBest,
   };
   const proposal = {
     id: res.id,
+    approvalHash: res.approvalHash,
     amountBDT: q.sendBDT,
+    amountUSD: Number(usdRes.usd.toFixed(2)),
     recipient,
+    currency: q.currency,
+    corridor: args.corridor,
+    purpose: args.purpose || 'tuition',
+    net: q.net,
+    feeBDT: q.feeBDT,
+    etaDays: q.etaDays,
+    provider: q.provider,
     route,
+    isBestRoute: routeIsBest,
     status: 'pending' as const,
-    checks: res.ruleResults.filter((r: any) => r.passed && r.status === 'enforced').map((r: any) => `${r.ruleId} passed`),
-    hash: res.payloadHash,
     rules: res.ruleResults.map(ruleView),
     notEnforced: res.notEnforced,
+    source,
+    illustrative,
+    snapshot: q.dateCollected,
   };
   return {
     status: 'done',
-    summary: `Draft ready: send BDT ${q.sendBDT}, they receive ${q.currency} ${q.net} (${q.provider})`,
+    summary: `Draft ready: send ${fmtAmount(q.sendBDT, 'BDT')}, they receive ${fmtAmount(q.net, q.currency)} (${q.provider})`,
     data: {
       proposalId: res.id,
-      payloadHash: res.payloadHash,
+      approvalHash: res.approvalHash,
+      amountUsd: Number(usdRes.usd.toFixed(2)),
       currency: q.currency,
       pair: q.pair,
       rate: q.rate,
+      usdPerBdt: q.usdPerBdt,
       feeBDT: q.feeBDT,
       sendBDT: q.sendBDT,
       gross: q.gross,
       net: q.net,
       provider: q.provider,
+      isBestRoute: routeIsBest,
+      bestProvider: bestProvider || null,
       etaDays: q.etaDays,
       dateCollected: q.dateCollected,
-      source: 'routes dataset',
+      source,
       dataType: q.dataType,
     },
-    card: { kind: 'proposal', proposal },
+    card: { kind: 'proposal', proposal, source, snapshot: q.dateCollected, illustrative },
   };
 }
 
@@ -347,8 +545,12 @@ export async function runTool(name: string, userId: string, args: any, ctx: { in
       return checkComplianceTool(userId, args, instructionSource);
     case 'fx_window':
       return fxWindow(args);
+    case 'build_credit_plan':
+      return buildCreditPlan(args);
     case 'propose_payment':
       return proposePayment(userId, args, instructionSource);
+    case 'set_alert':
+      return setAlert(userId, args);
     case 'execute_payment':
       return executePayment(userId, args);
     default:
@@ -378,7 +580,7 @@ export const toolSpecs: ToolSpec[] = [
   },
   {
     name: 'check_compliance',
-    description: 'Evaluate compliance rules for a transfer. Returns an overall decision and the rules that failed.',
+    description: 'Evaluate compliance rules for a transfer. Returns an overall decision and the rules that failed. The beneficiary type is derived server-side from the purpose.',
     parameters: {
       type: 'object',
       properties: {
@@ -386,7 +588,6 @@ export const toolSpecs: ToolSpec[] = [
         amount: { type: 'number' },
         currency: { type: 'string', enum: ['BDT', 'USD'] },
         purpose: { type: 'string' },
-        beneficiaryType: { type: 'string' },
         coveragePeriodMonths: { type: 'number' },
         isFirstRelease: { type: 'boolean' },
       },
@@ -400,7 +601,8 @@ export const toolSpecs: ToolSpec[] = [
   },
   {
     name: 'propose_payment',
-    description: 'Create a pending payment proposal (T2). Never sends money. Returns the quote and an approval hash the user confirms in the UI.',
+    description:
+      'Create a pending payment proposal (T2). Never sends money. The recipient defaults to the university on the student file and the beneficiary type is derived server-side from the purpose. Returns the quote and an approval hash the user confirms in the UI.',
     parameters: {
       type: 'object',
       properties: {
@@ -409,12 +611,42 @@ export const toolSpecs: ToolSpec[] = [
         currency: { type: 'string' },
         recipient: { type: 'string' },
         purpose: { type: 'string' },
-        beneficiaryType: { type: 'string' },
         coveragePeriodMonths: { type: 'number' },
         isFirstRelease: { type: 'boolean' },
         routeProvider: { type: 'string' },
       },
       required: ['corridor', 'amount'],
+    },
+  },
+  {
+    name: 'build_credit_plan',
+    description:
+      'Build a payment/savings plan with milestones at 1, 3, 6 and 12 months (T2). Malaysia gets a table; other corridors get general principles only. Never opens an account or submits an application. Not financial advice.',
+    parameters: {
+      type: 'object',
+      properties: {
+        corridor: { type: 'string', enum: [...corridors], description: 'Defaults to BD-MY.' },
+        totalAmount: { type: 'number', description: 'Total the user is planning for.' },
+        currency: { type: 'string', enum: ['BDT', 'USD'], description: 'Defaults to BDT.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_alert',
+    description:
+      'Create a PENDING rate alert (T2). Never activates it; the user turns it on in the UI. If a deadline is given, the fallback date must leave room for the route ETA plus one day.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pair: { type: 'string', description: 'Rate pair, e.g. MYR/BDT.' },
+        target: { type: 'number', description: 'Target rate (must be > 0).' },
+        fallbackDate: { type: 'string', description: 'Date to fall back, YYYY-MM-DD.' },
+        deadline: { type: 'string', description: 'Date the money must arrive, YYYY-MM-DD.' },
+        corridor: { type: 'string', description: 'Corridor used to look up route ETA. Defaults to BD-MY.' },
+      },
+      required: ['pair', 'target', 'fallbackDate'],
+      additionalProperties: false,
     },
   },
   {

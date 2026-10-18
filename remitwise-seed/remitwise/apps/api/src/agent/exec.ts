@@ -29,10 +29,14 @@ export async function invokeTool(
   const v = validateToolArgs(name, rawArgs);
   if (!v.ok) {
     const safeError = redactString(v.error);
+    // Distinguish bad arguments (a contract/zod failure the caller may safely
+    // retry) from an unknown tool name (a model hallucination). Only the former
+    // triggers the offline retry in loop.ts.
+    const code = v.error.startsWith('unknown tool') ? 'unknown_tool' : 'invalid_arguments';
     emit({ type: 'tool_call', id, tool: name, tier, args: redactValue(rawArgs ?? {}) });
-    emit({ type: 'tool_result', id, tool: name, status: 'error', summary: safeError, data: { error: safeError } });
+    emit({ type: 'tool_result', id, tool: name, status: 'error', summary: safeError, data: { error: safeError, code } });
     await audit({ event: 'agent_tool_call', tier, toolName: name, outcome: 'blocked', decision: 'blocked', ruleId: 'AGENT_ARG_01' });
-    return { status: 'error', summary: safeError, data: { error: safeError } };
+    return { status: 'error', summary: safeError, data: { error: safeError, code } };
   }
 
   emit({ type: 'tool_call', id, tool: name, tier, args: redactValue(v.value) });
