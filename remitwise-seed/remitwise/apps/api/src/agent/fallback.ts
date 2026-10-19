@@ -71,7 +71,7 @@ function detectIntent(message: string): Intent {
   const m = message.toLowerCase();
   if (/\b(balance|how much|my account|wallet)\b/.test(m)) return 'balance';
   if (/\b(rate|fx|forecast|exchange|window)\b/.test(m)) return 'fx';
-  if (/\b(credit plan|payment plan|installment|build.*plan|afford)\b/.test(m)) return 'credit';
+  if (/\b(credit|payment plan|installment|build.*plan|afford)\b/.test(m)) return 'credit';
   if (/\b(tuition|university|college|fee|send|transfer|dad|mom|father|mother|pay)\b/.test(m)) return 'tuition';
   return 'unknown';
 }
