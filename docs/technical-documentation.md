@@ -11,7 +11,7 @@ Numbers in this document come from the code, not from memory:
 - Rule outcomes (the `Outcome` type in `apps/api/src/services/compliance.ts`):
   `pass`, `needs_documents`, `escalate_to_bank`, `blocked`.
 - Rule statuses (`RuleStatus`): `enforced`, `not_enforced`, `not_applicable`.
-- Tests: **6** unit (`test/unit.ts`), **25** agent (`test/agent.ts`), **34** smoke
+- Tests: **6** unit (`test/unit.ts`), **28** agent (`test/agent.ts`), **34** smoke
   checks (`test/smoke.sh`).
 
 ## 1. System architecture
@@ -69,7 +69,7 @@ written by `apps/api/src/seed.ts` and the routes/services.
 | `accounts` | `userId`, `currency`, `balance`, `label` | One per currency (`BDT`, `MYR`). |
 | `student_files` | `institution`, `estimate.totalUSD`, `estimate.academicYearMonths`, `level`, `bankBranchId`, `payerName`, `invoicePayerName` | Feeds `PURPOSE_02`, `AMT_01`, `AMT_02`, `BANK_01`, `PAYER_01`. |
 | `documents` | `userId`, `type`, `status` | Required set: `application_form`, `admission_letter`, `cost_estimate`, `passport`, `certificates`. Feeds `DOC_01`. |
-| `proposals` | `status`, `payloadHash`, `approvalHash`?... | `status` enum `pending, confirmed, cancelled, expired, executed`; `payloadHash` is sha256 over canonical input + userId (`services/proposals.ts` `payloadHashOf`). |
+| `proposals` | `status`, `payloadHash`, `quoteSnapshot`, `rulesVersion`, `expiresAt` | `status` enum `pending, confirmed, cancelled, expired, executed`; `payloadHash` is sha256 over canonical input + userId (`services/proposals.ts` `payloadHashOf`, written by `createProposal`; the card surfaces the same value as `approvalHash`). |
 | `transfers` | `userId`, `proposalId`, `status`, `amountBDT`, `quoteSnapshot`, `receiptId` | `status` enum `pending, completed, failed, reversed`. |
 | `alerts` | `userId`, `pair`, `target`, `fallbackDate`, `status` | Created `proposed`; activation is a UI action. |
 | `audit_log` | `ts`, `rulesVersion`, `component`, `decision`, `event`, `tier`, `outcome`, `userId`, ... | `tier` enum `T1, T2, T3, SYS`. Insert/read only — see the append-only note below. |

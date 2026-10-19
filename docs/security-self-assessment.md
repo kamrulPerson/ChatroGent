@@ -101,7 +101,7 @@ completed transfers). `test/smoke.sh` asserts exactly this transition
 ## 4. Tests mapped to controls
 
 Full case list: `docs/TEST_CASES.md`. The agent suite is
-`remitwise-seed/remitwise/apps/api/test/agent.ts` (25 tests, verified by running).
+`remitwise-seed/remitwise/apps/api/test/agent.ts` (28 tests, verified by running).
 
 | Control | Test case(s) | What it verifies |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ Full case list: `docs/TEST_CASES.md`. The agent suite is
 | `INJ_01` | (d), (A13), (e) | Pasted refusal logged and nothing executed; exact typed/pasted wording; injection inside a tool result is not obeyed |
 | Server-side history | (A10) | Follow-ups work from the stored last-8 window |
 | Output checks | (i), (v) | False "sent" claim replaced; unreturned figure replaced with the reason logged; grouped tool figures kept |
-| Redaction | (j) | No fake key in errors, nested results, SSE events or `audit_log` |
+| Redaction | (j), (aa) | No fake key in errors, nested results, SSE events or `audit_log`; a repeated `Date` value serializes to ISO instead of `[Circular]` |
 | Audit log (append-only role) | (u), (d), (v) plus `smoke.sh` | One row per tool call with `userId`/`inputs`/`rulesVersion`; `smoke.sh` reports `PASS audit_log append-only (update denied)` |
 | Rate limiting | **not covered by the automated suites** | Verified by running 11 rapid login calls → 11th returned 429 |
 | Fail-fast default secret | **not covered by the automated suites** | Verified by running `NODE_ENV=production` → exit 1 with the refusal message |
@@ -123,7 +123,7 @@ Full case list: `docs/TEST_CASES.md`. The agent suite is
 
 - `npx tsc --noEmit` → exit `0`
 - `npm run test:unit` → `# tests 6`, `# pass 6`, `# fail 0`
-- `npm run test:agent` → `# tests 25`, `# pass 25`, `# fail 0`
+- `npm run test:agent` → `# tests 28`, `# pass 28`, `# fail 0`
 - `bash remitwise-seed/remitwise/apps/api/test/smoke.sh` → `PASS=34 FAIL=0`
   (including `PASS audit_log append-only (update denied)` and
   `PASS ANOM_01/VEL_01 enforced once history exists`)

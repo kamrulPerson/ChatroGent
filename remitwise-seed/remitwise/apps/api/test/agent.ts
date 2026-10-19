@@ -12,10 +12,10 @@ import assert from 'node:assert/strict';
 import { ObjectId } from 'mongodb';
 import { scryptSync, randomBytes } from 'node:crypto';
 import { getDb, closeDb } from '../src/db.js';
-import { setTestProvider, ScriptedProvider, resolveProvider } from '../src/agent/llm.js';
+import { setTestProvider, ScriptedProvider, resolveProvider, logProviderStartup } from '../src/agent/llm.js';
 import { runAgent } from '../src/agent/loop.js';
 import { detectInjection } from '../src/agent/injection.js';
-import { validateToolArgs } from '../src/agent/tools.js';
+import { validateToolArgs, runTool } from '../src/agent/tools.js';
 import { parseAmount } from '../src/agent/fallback.js';
 import { fmtUsd } from '../src/agent/format.js';
 import { redactString, redactValue } from '../src/agent/redact.js';
@@ -830,6 +830,85 @@ test('x: check counts use only applicable (enforced) rules', async () => {
   assert.ok(enforced < totalRules, 'the denominator is smaller than the full rule set');
   assert.ok(chk.data.total <= totalRules, 'trace denominator never exceeds the full rule set');
   assert.ok(chk.data.passedCount <= chk.data.total, 'passed never exceeds the denominator');
+});
+
+// (y) The "credit" keyword routes an offline question to build_credit_plan. The
+// offline path always asks the BD-MY (Malaysia) corridor; the tool itself answers
+// a country outside the supported list with the general-principles notice. Covers
+// the fallback.ts intent-list change.
+test('y: offline credit questions reach build_credit_plan; unsupported country gets the notice', async () => {
+  const events = await offlineTurn('How do I build credit while studying in Malaysia?');
+  assert.ok(toolNames(events).includes('build_credit_plan'), 'the credit question reached build_credit_plan');
+  const plan = toolResult(events, 'build_credit_plan');
+  assert.equal(plan.data.corridor, 'BD-MY', 'the offline fallback uses the Malaysia corridor');
+  assert.equal(plan.data.supported, true, 'Malaysia is a supported corridor');
+  assert.match(text(events), /guidance, not financial advice/i, 'the guidance disclaimer is present');
+
+  const unsupported = await runTool(
+    'build_credit_plan',
+    userId,
+    { corridor: 'BD-UK', totalAmount: 12000, currency: 'GBP' },
+    { instructionSource: 'user_typed' },
+  );
+  assert.equal(unsupported.data.corridor, 'BD-UK');
+  assert.equal(unsupported.data.supported, false, 'BD-UK is not in the supported list');
+  assert.match(unsupported.summary, /isn't in the supported list yet/, 'the unsupported notice is returned');
+  assert.match(unsupported.summary, /guidance only; not financial advice/i, 'still guidance, not advice');
+});
+
+// (z) The startup log uses the same condition as resolveProvider(): under test
+// mode it must never print that a live provider is enabled. Covers the llm.ts
+// logProviderStartup change.
+test('z: startup log never claims a live provider under test mode', () => {
+  const saved = {
+    NODE_ENV: process.env.NODE_ENV,
+    AGENT_TEST_MODE: process.env.AGENT_TEST_MODE,
+    LLM_API_KEY: process.env.LLM_API_KEY,
+    LLM_BASE_URL: process.env.LLM_BASE_URL,
+    LLM_MODEL: process.env.LLM_MODEL,
+  };
+  const logs: string[] = [];
+  const orig = console.log;
+  try {
+    console.log = (...a: any[]) => logs.push(a.join(' '));
+    process.env.LLM_API_KEY = ['gsk', 'TESTKEY12345'].join('_');
+    process.env.LLM_BASE_URL = 'https://api.example.test/openai/v1';
+    process.env.LLM_MODEL = 'test-model';
+
+    process.env.AGENT_TEST_MODE = '1';
+    delete process.env.NODE_ENV;
+    logProviderStartup();
+    const underTest = logs.join('\n');
+    assert.ok(!/live provider enabled/.test(underTest), 'must not claim a live provider under test mode');
+    assert.match(underTest, /running in offline mode/, 'reports offline mode');
+
+    logs.length = 0;
+    delete process.env.AGENT_TEST_MODE;
+    process.env.NODE_ENV = 'production';
+    logProviderStartup();
+    assert.match(logs.join('\n'), /live provider enabled/, 'still reports enabled outside test mode');
+  } finally {
+    console.log = orig;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+// (aa) Redaction converts a Date before the circular-reference check, so the same
+// Date instance used twice is serialized, not marked "[Circular]", and secrets
+// nested inside objects/arrays are still masked. Covers the redact.ts change.
+test('aa: redaction keeps repeated Date values and masks nested secrets', () => {
+  const fake = ['gsk', 'TESTKEY12345'].join('_');
+  const d = new Date('2026-10-17T12:00:00.000Z');
+  const out = redactValue({ createdAt: d, updatedAt: d, arr: [d], nested: { token: fake } });
+  const s = JSON.stringify(out);
+  assert.ok(!s.includes('[Circular]'), 'the same Date used twice is not marked Circular');
+  assert.equal(out.createdAt, '2026-10-17T12:00:00.000Z');
+  assert.equal(out.updatedAt, '2026-10-17T12:00:00.000Z');
+  assert.equal(out.arr[0], '2026-10-17T12:00:00.000Z');
+  assert.ok(!s.includes(fake), 'the secret nested in the object is masked');
 });
 
 // (t) A non-round amount debits exactly the card's BDT figure, once. This is the
