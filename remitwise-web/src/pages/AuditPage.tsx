@@ -26,7 +26,7 @@ export default function AuditPage() {
             id: String(a._id),
             time: toTime(a.ts),
             event: a.decision && a.decision !== 'n/a' ? `${a.event} (${a.decision})` : a.event,
-            tool: a.tool,
+            tool: a.toolName || a.tool,
             tier: (a.tier || 'SYS') as Tier | 'SYS',
             outcome: a.outcome || '',
           })),

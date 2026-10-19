@@ -14,10 +14,10 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
   const pending = p.status === 'pending';
   const receive = p.route.net == null ? 'No quote' : fmtMoney(p.route.net, p.route.currency);
   const rules = p.rules || [];
-  const total = rules.length;
-  const notApplicable = rules.filter((r) => r.status === 'not_applicable').length;
-  const passed = rules.filter((r) => r.status === 'enforced' && r.passed).length;
-  const failed = rules.filter((r) => r.status === 'enforced' && !r.passed);
+  const applicable = rules.filter((r) => r.status === 'enforced');
+  const total = applicable.length;
+  const passed = applicable.filter((r) => r.passed).length;
+  const failed = applicable.filter((r) => !r.passed);
   return (
     <section className="card confirm" aria-label="Payment confirmation">
       <header className="confirmhead">
@@ -32,11 +32,11 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
         <div><dt>They receive</dt><dd className="strong">{receive}</dd></div>
         <div><dt>Arrives in</dt><dd>{p.route.etaDays} {p.route.etaDays === 1 ? 'day' : 'days'}</dd></div>
       </dl>
+      <p className="approveas">Approving as: <strong>{p.approverName || 'the account holder'}</strong> (taka account)</p>
       {p.rules ? (
         <div className="rulesblock">
           <p className="checkline">
-            <strong>{passed} of {total}</strong> checks passed
-            {notApplicable > 0 && <> ({notApplicable} not applicable)</>}.
+            <strong>{passed} of {total}</strong> applicable checks passed.
           </p>
           {failed.length > 0 && (
             <ul className="checks">
@@ -48,9 +48,9 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
             </ul>
           )}
           <details className="checks">
-            <summary>See all {total} checks</summary>
+            <summary>See all {total} applicable checks</summary>
             <ul>
-              {rules.map((r) => {
+              {applicable.map((r) => {
                 const s = ruleStatusLabel(r);
                 return (
                   <li key={r.ruleId} className={'rule ' + s.tone}>

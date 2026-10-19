@@ -16,7 +16,7 @@ r.post('/login', async (req, res) => {
     }
     const token = signToken({ sub: user._id.toString(), email: user.email, kycTier: user.kycTier });
     await audit({ event: 'login_success', tier: 'SYS', outcome: 'ok', userId: user._id.toString() });
-    return res.json({ token });
+    return res.json({ token, name: user.name || '' });
   } catch (e) {
     return res.status(400).json({ error: 'bad request' });
   }

@@ -96,7 +96,10 @@ r.post('/:id/confirm', async (req: any, res) => {
       .updateOne({ _id: pid, status: 'pending' }, { $set: { status: 'confirmed', confirmedAt: new Date() } });
     if (claimed.modifiedCount === 0) return res.status(409).json({ error: 'already_confirmed' });
 
-    const bdt = Math.round(p.amountUSD * BDT_PER_USD);
+    // Debit exactly the taka figure shown on the confirmation card (the quote's
+    // sendBDT, computed with the corridor's USD/BDT rate), never a re-derived
+    // amount from a different constant.
+    const bdt = Math.round(Number(p.quoteSnapshot?.sendBDT ?? p.amountUSD * BDT_PER_USD));
     const debit = await db.collection('accounts').updateOne(
       { userId: new ObjectId(req.user.sub), currency: 'BDT', balance: { $gte: bdt } },
       { $inc: { balance: -bdt } },

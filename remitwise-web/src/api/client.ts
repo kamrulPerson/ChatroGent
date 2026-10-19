@@ -4,16 +4,30 @@
 export const useMock = import.meta.env.VITE_USE_MOCK === 'true';
 
 const TOKEN_KEY = 'rw_token';
+const USER_KEY = 'rw_user_name';
 let token = (typeof localStorage !== 'undefined' && localStorage.getItem(TOKEN_KEY)) || '';
+let userName = (typeof localStorage !== 'undefined' && localStorage.getItem(USER_KEY)) || '';
 
 export function setToken(t: string) {
   token = t;
   try { localStorage.setItem(TOKEN_KEY, t); } catch { /* ignore */ }
 }
 
+// The signed-in user's display name. It is used only for the "Approving as"
+// line on the confirmation card and receipt, and is never sent to the model.
+export function setUserName(name: string) {
+  userName = name || '';
+  try { localStorage.setItem(USER_KEY, userName); } catch { /* ignore */ }
+}
+
+export function getUserName(): string {
+  return userName || 'the account holder';
+}
+
 export function clearToken() {
   token = '';
-  try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+  userName = '';
+  try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
 }
 
 // Fired when the API rejects our token (401). The app clears the session and
@@ -108,8 +122,9 @@ export interface ProposeResponse {
 }
 
 export interface DashboardData {
+  name?: string;
   kycTier: number;
-  balances: { currency: string; amount: number }[];
+  balances: { currency: string; amount: number; label?: string }[];
   documents: { type: string; status: string; verified: boolean }[];
   alerts: { id: string; pair: string; target: number; fallbackDate: string; status: string }[];
   transfers: { id: string; date: string; amountUSD: number | null; amountBDT: number | null; status: string }[];
@@ -194,6 +209,7 @@ async function doLogin(email: string, password: string) {
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error || 'login_failed');
   setToken(body.token);
+  setUserName(body.name || '');
   return body;
 }
 

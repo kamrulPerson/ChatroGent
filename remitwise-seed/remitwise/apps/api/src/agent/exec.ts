@@ -5,6 +5,7 @@
 import { runTool, validateToolArgs, TOOL_TIERS, type Tier, type ToolResult } from './tools.js';
 import { audit } from '../audit.js';
 import { redactValue, redactString } from './redact.js';
+import { policy } from '../config.js';
 import type { Emit } from './events.js';
 
 let counter = 0;
@@ -35,23 +36,47 @@ export async function invokeTool(
     const code = v.error.startsWith('unknown tool') ? 'unknown_tool' : 'invalid_arguments';
     emit({ type: 'tool_call', id, tool: name, tier, args: redactValue(rawArgs ?? {}) });
     emit({ type: 'tool_result', id, tool: name, status: 'error', summary: safeError, data: { error: safeError, code } });
-    await audit({ event: 'agent_tool_call', tier, toolName: name, outcome: 'blocked', decision: 'blocked', ruleId: 'AGENT_ARG_01' });
+    await audit({
+      event: 'agent_tool_call',
+      tier,
+      toolName: name,
+      outcome: 'blocked',
+      decision: 'blocked',
+      ruleId: 'AGENT_ARG_01',
+      userId,
+      inputs: redactValue(rawArgs ?? {}),
+      rulesVersion: policy.rulesVersion,
+    });
     return { status: 'error', summary: safeError, data: { error: safeError, code } };
   }
 
   emit({ type: 'tool_call', id, tool: name, tier, args: redactValue(v.value) });
   const result = await runTool(name, userId, v.value, { instructionSource });
-  emit({ type: 'tool_result', id, tool: name, status: result.status, summary: redactString(result.summary), data: redactValue(result.data) });
+  emit({
+    type: 'tool_result',
+    id,
+    tool: name,
+    status: result.status,
+    // The trace shows the short label when the tool provides one; the full
+    // explanation is only ever emitted once, in the answer text.
+    summary: redactString(result.trace || result.summary),
+    data: redactValue(result.data),
+  });
   const outcome = result.status === 'done' ? 'pass' : result.status === 'blocked' ? 'blocked' : 'error';
+  // A T3 gate returns a normal result shape but no money moved: record it as
+  // "awaiting_confirmation" (a neutral label) rather than a pass or a hard block,
+  // so the Activity log reads honestly without implying a refusal.
+  const gated = name === 'execute_payment' && result.data?.status === 'awaiting_user_confirmation';
   await audit({
     event: 'agent_tool_call',
     tier,
     toolName: name,
-    outcome,
-    decision: outcome === 'pass' ? 'pass' : 'blocked',
-    ruleId: 'AGENT_TOOL',
+    outcome: gated ? 'awaiting_confirmation' : outcome,
+    decision: gated ? 'awaiting_confirmation' : outcome === 'pass' ? 'pass' : 'blocked',
+    ruleId: gated ? 'AGENT_T3_GATE' : 'AGENT_TOOL',
+    userId,
     inputs: redactValue(v.value),
-    summary: result.summary,
+    rulesVersion: policy.rulesVersion,
   });
   return result;
 }

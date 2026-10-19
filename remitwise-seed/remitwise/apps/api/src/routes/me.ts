@@ -56,8 +56,9 @@ r.get('/dashboard', async (req: any, res) => {
     db.collection('fx_rates').find({ pair: 'MYR/BDT' }).sort({ date: 1 }).toArray(),
   ]);
   res.json({
+    name: user?.name ?? '',
     kycTier: user?.kycTier ?? 0,
-    balances: bals.map((b) => ({ currency: b.currency, amount: b.balance })),
+    balances: bals.map((b) => ({ currency: b.currency, amount: b.balance, label: b.label ?? null })),
     documents: docs.map((d) => ({ type: d.type, status: d.status, verified: d.status === 'valid' })),
     alerts: alerts.map((a) => ({ id: a._id, pair: a.pair, target: a.target, fallbackDate: a.fallbackDate, status: a.status })),
     transfers: transfers.map((t) => ({

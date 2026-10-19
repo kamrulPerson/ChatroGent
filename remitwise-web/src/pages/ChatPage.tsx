@@ -4,7 +4,7 @@ import type { AlertRule, ChatItem, Proposal, Route, Tier, ToolStep } from '../ty
 import { buildRoutes } from '../mock/routes';
 import { fxSeries } from '../mock/data';
 import { fmtBDT, fmtMoney, nowTime, sleep, uid } from '../format';
-import { api, useMock, type ChatEvent } from '../api/client';
+import { api, getUserName, useMock, type ChatEvent } from '../api/client';
 import TierBadge, { tierInfo } from '../components/TierBadge';
 import ToolTrace from '../components/ToolTrace';
 import RouteCard from '../components/RouteCard';
@@ -147,6 +147,7 @@ export default function ChatPage() {
       kind: 'proposal', id: uid(),
       proposal: {
         id: uid(), amountBDT: amount, recipient: 'University of Malaya (sample)', route: best, status: 'pending',
+        approverName: getUserName(),
         checks: ['Purpose, documents, and limits passed'],
       },
     });
@@ -163,7 +164,7 @@ export default function ChatPage() {
 
     if (useMock || !p.approvalHash) {
       const ref = 'RW-' + Math.random().toString(36).slice(2, 8).toUpperCase();
-      push({ kind: 'receipt', id: uid(), receipt: { ref, amountBDT: p.amountBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime() } });
+      push({ kind: 'receipt', id: uid(), receipt: { ref, amountBDT: p.amountBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime(), approverName: p.approverName } });
       addTransfer({ id: ref, date: new Date().toISOString().slice(0, 10), recipient: p.recipient, amountBDT: p.amountBDT, status: 'Pending' });
       push({ kind: 'agent', id: uid(), text: `Done. Your receipt ${ref} is above — keep it for your records.` });
       setMode('T1');
@@ -173,8 +174,9 @@ export default function ChatPage() {
 
     try {
       const res = await api.confirmProposal(p.id, p.approvalHash, 'user_typed');
-      push({ kind: 'receipt', id: uid(), receipt: { ref: res.receiptId, amountBDT: p.amountBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime() } });
-      addTransfer({ id: res.receiptId, date: new Date().toISOString().slice(0, 10), recipient: p.recipient, amountBDT: p.amountBDT, status: 'Completed' });
+      const paidBDT = res.amountBDT ?? p.amountBDT;
+      push({ kind: 'receipt', id: uid(), receipt: { ref: res.receiptId, amountBDT: paidBDT, receive: p.route.net, currency: p.route.currency, recipient: p.recipient, routeName: p.route.name, time: nowTime(), approverName: p.approverName } });
+      addTransfer({ id: res.receiptId, date: new Date().toISOString().slice(0, 10), recipient: p.recipient, amountBDT: paidBDT, status: 'Completed' });
       push({ kind: 'agent', id: uid(), text: `Done. Your receipt ${res.receiptId} is above — keep it for your records.` });
     } catch (e: any) {
       if (e?.status === 401) {
@@ -280,6 +282,7 @@ export default function ChatPage() {
               <div><dt>Route</dt><dd>{it.receipt.routeName}</dd></div>
               <div><dt>Time</dt><dd>{it.receipt.time}</dd></div>
             </dl>
+            <p className="approveas">Approving as: <strong>{it.receipt.approverName || getUserName()}</strong> (taka account)</p>
           </div>
         );
       case 'alert':

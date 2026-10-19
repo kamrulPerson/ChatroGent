@@ -48,11 +48,18 @@ async function main() {
     tier1: { BDT: 800000, MYR: 1500 },
     tier0: { BDT: 50000, MYR: 0 },
   };
+  // Demo account labels keep the story consistent across the dashboard and the
+  // assistant. IDs (userId + currency) and balances are unchanged, so existing
+  // tests are unaffected.
+  const accountLabels: Record<string, string> = {
+    BDT: 'Family taka account',
+    MYR: 'Student card (Kuala Lumpur)',
+  };
   for (const u of demoUsers) {
     for (const currency of ['BDT', 'MYR'] as const) {
       await db.collection('accounts').updateOne(
         { userId: ids[u.key], currency },
-        { $setOnInsert: { balance: balances[u.key][currency], createdAt: now } },
+        { $set: { label: accountLabels[currency] }, $setOnInsert: { balance: balances[u.key][currency], createdAt: now } },
         { upsert: true },
       );
     }
@@ -86,7 +93,13 @@ async function main() {
   }
 
   // Documents, with deliberate edge cases for the compliance logic.
-  const valid = { admission_letter: 'valid', cost_estimate: 'valid', passport: 'valid', certificates: 'valid' };
+  const valid = {
+    application_form: 'valid',
+    admission_letter: 'valid',
+    cost_estimate: 'valid',
+    passport: 'valid',
+    certificates: 'valid',
+  };
   const docStatus: Record<string, Record<string, string>> = {
     tier2: { ...valid },
     tier2expired: { ...valid, passport: 'expired' },

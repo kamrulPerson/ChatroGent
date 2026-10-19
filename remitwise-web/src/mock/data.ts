@@ -2,8 +2,8 @@ import type { AuditEvent, ChatItem, Transfer, AlertRule } from '../types';
 
 // SAMPLE DATA for the wireframe. Replace with GET /api/dashboard.
 export const balances = [
-  { currency: 'BDT', label: 'Taka account', amount: 310000, symbol: '৳' },
-  { currency: 'MYR', label: 'Student card balance', amount: 4120.5, symbol: 'RM ' },
+  { currency: 'BDT', label: 'Family taka account', amount: 310000, symbol: '৳' },
+  { currency: 'MYR', label: 'Student card (Kuala Lumpur)', amount: 4120.5, symbol: 'RM ' },
 ];
 
 export const fxSeries: number[] = Array.from({ length: 30 }, (_, i) =>
