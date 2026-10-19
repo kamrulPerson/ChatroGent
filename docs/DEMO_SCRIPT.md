@@ -67,11 +67,15 @@ API behind it returns the display name `Nadia (tier 2, happy path)`.
 Real tool output:
 
 ```
-[get_balance]   balances: BDT 23,77,150.00 ; MYR 6,000
-[check_compliance] pass — 16 of 16 enforced rules passed, 2 not_applicable
-[compare_routes] 2 routes; best "Example AD Bank B (SWIFT)" nets MYR 8,039.09
-[propose_payment] Draft ready: send BDT 2,40,000.00, they receive MYR 8,039.09
+[get_balance]   BDT 23,77,150.00
+[check_compliance] 16 of 16 applicable checks passed
+[compare_routes] 2 route(s); best Example AD Bank B (SWIFT) nets MYR 8,039.09
+[propose_payment] Draft ready: send BDT 2,40,000.00, they receive MYR 8,039.09 (Example AD Bank B (SWIFT))
 ```
+
+`get_balance` shows the taka total; the MYR 6,000 sits in the same tool's
+`data.balances`. The 2 not-applicable rules are reported separately, so the
+compliance line reads "16 of 16 applicable checks passed".
 
 Route card rows (real):
 
@@ -108,14 +112,16 @@ and it's refused: the confirmation is single-use and bound to this proposal."
 
 **Type**: `Dad wants to send 500 USD for my tuition. What is the best way?`
 
-**On screen:** the trace stops after `check_compliance`, which shows **blocked**.
-The agent writes one sentence; no route card and no confirmation card appear.
+**On screen:** the trace runs `get_balance` (T1) then stops at `check_compliance`
+(T1), which shows **blocked** (`Blocked: fee too high for this amount`). The agent
+writes one sentence; no route card and no confirmation card appear.
 
 Real output:
 
 ```
-This transfer is too small after fees and the FX margin. Please send a larger
-amount or choose a cheaper route. Nothing has been sent.
+This payment can't go ahead because the ৳2,500 fee plus the 1.5% FX margin come
+to about 5.6% of the amount, above the 5% limit. On this route, send at least
+৳71,429 (or pick a cheaper route) and it can go ahead; nothing has been sent.
 ```
 
 **Say:** "A flat fee of ৳2,500 is over 5% of 500 dollars, so the fee ceiling
@@ -174,24 +180,32 @@ Tell me the total you are planning for and I will lay out the monthly milestones
 Then **type a country that is not in the supported list**, e.g.
 `How do I build credit while studying in Kenya?`
 
-**On screen:** the same `build_credit_plan` step. The offline fallback answers
-with the Malaysia plan, because the fallback always uses the BD-MY corridor; it
-does not yet switch corridors from the country word in the message. *(This is a
-known offline limitation — see the technical documentation's Limitations.)*
+**On screen:** the same `build_credit_plan` step, with the same text. The offline
+fallback always uses the BD-MY corridor and, with no total supplied, asks for the
+total first — so Malaysia and Kenya produce the identical prompt. It does not
+switch corridors from the country word in the message. *(This is a known offline
+limitation — see the technical documentation's Limitations.)*
 
-The tool itself does produce a correct unsupported-country answer when called
-with a non-BD-MY corridor. Real direct tool output:
+The tool does produce a correct unsupported-country answer, but only when it is
+called with a non-BD-MY corridor **and** a total amount. Real direct tool output:
 
 ```
-{"corridor":"BD-UK","supported":false,
- "summary":"I can only give general principles for BD-UK — it isn't in the supported list yet. Guidance only; not financial advice."}
+runTool('build_credit_plan', { corridor: 'BD-UK', totalAmount: 12000, currency: 'GBP' })
+→ status "done"; data.corridor "BD-UK"; data.supported false
+  summary: "I can only give general principles for BD-UK — it isn't in the supported
+            list yet. Guidance only; not financial advice."
 ```
+
+With no `totalAmount`, the tool returns "Tell me the total you are planning for…"
+regardless of corridor. `summary` is a top-level field on the result, not part of
+`data`.
 
 **Say:** "The plan is guidance, not financial advice — it never opens an account
 or applies for a product. For a country outside the supported list the tool gives
-general principles only. In offline mode the country is fixed to Malaysia, so on
-this run it repeats the Malaysia plan; the live-model path passes the country
-through. That and the offline alert gap are the two things we'd fix next."
+general principles only, but only once it has a total to plan against. In offline
+mode the corridor is fixed to Malaysia and it asks for the total before saying
+anything country-specific; the live-model path passes the country through. That
+and the offline alert gap are the two things we'd fix next."
 
 ## 7. Unverified user block (~0:30)
 
@@ -227,4 +241,4 @@ plain English. It's all sample data — no real money."
   `pasted` flag is set. All other steps are typed.
 - Keep to a clean seed so the balance and receipts match this script.
 - Route/rate numbers are labelled sample data. Names like "Example AD Bank B" and
-  "University of Malaya" are sandbox placeholders.
+  "Universiti Malaya" are sandbox placeholders.

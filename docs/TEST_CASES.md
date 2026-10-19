@@ -17,7 +17,7 @@ otherwise build a live provider (test **q**). The demo users/balances come from
 the idempotent seed; each agent test uses its own throwaway user where it needs
 to mutate state.
 
-## Agent integration (`test/agent.ts`, 25 tests)
+## Agent integration (`test/agent.ts`, 28 tests)
 
 | Test | Asserts |
 | --- | --- |
@@ -46,6 +46,9 @@ to mutate state.
 | **v** output-check reason | a figure written with Indian grouping is kept; a figure no tool returned is replaced and the reason is logged as an `output_check` row |
 | **w** fee-ceiling boundary | ৳71,429 reaches the confirmation card, ৳71,428 is refused with the same plain message, which reads "just over the 5% limit" — never "5.0% above the 5% limit" |
 | **x** check-count scope | the trace and the card count only enforced rules; `not_applicable` and `not_enforced` are excluded and the denominator never exceeds 18 (the full rule set) |
+| **y** offline credit routing | the `credit` keyword reaches `build_credit_plan`; the offline path uses the BD-MY corridor; a non-BD-MY corridor with a total returns the "isn't in the supported list yet" notice |
+| **z** startup-log honesty | with a key, base URL and model set, `logProviderStartup` under test mode prints "running in offline mode" and never claims a live provider is enabled |
+| **aa** redaction of `Date` | the same `Date` instance used twice serializes to ISO (not `[Circular]`) and a secret nested inside an object/array is still masked |
 
 ## Unit (`test/unit.ts`, 6 tests)
 

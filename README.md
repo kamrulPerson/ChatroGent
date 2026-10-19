@@ -88,7 +88,7 @@ output is reported as-is.
 ```bash
 docker compose exec -T api npx tsc --noEmit          # exit 0
 docker compose exec -T api npm run test:unit         # tests 6, pass 6, fail 0
-docker compose exec -T api npm run test:agent        # tests 25, pass 25, fail 0
+docker compose exec -T api npm run test:agent        # tests 28, pass 28, fail 0
 bash remitwise-seed/remitwise/apps/api/test/smoke.sh # PASS=34 FAIL=0
 cd remitwise-web && npm run build                    # ✓ built in 922ms
 ```
