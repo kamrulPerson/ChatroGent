@@ -48,9 +48,9 @@ export default function ConfirmCard({ proposal, onConfirm, onCancel, disabled }:
             </ul>
           )}
           <details className="checks">
-            <summary>See all {total} applicable checks</summary>
+            <summary>See all {rules.length} checks</summary>
             <ul>
-              {applicable.map((r) => {
+              {rules.map((r) => {
                 const s = ruleStatusLabel(r);
                 return (
                   <li key={r.ruleId} className={'rule ' + s.tone}>

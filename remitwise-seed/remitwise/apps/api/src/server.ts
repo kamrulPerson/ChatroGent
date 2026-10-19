@@ -17,11 +17,17 @@ import { audit } from './audit.js';
 import { policy } from './config.js';
 import { logProviderStartup } from './agent/llm.js';
 
-// Warn (do not fail) when the default demo signing key is in use. Judges start
-// with the stock .env, so a hard exit here would break `docker compose up`.
-// Production must still set a real secret; we make that loud but non-fatal.
-if ((process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET) {
-  const scope = process.env.NODE_ENV === 'production' ? 'NODE_ENV=production' : `NODE_ENV=${process.env.NODE_ENV || 'unset'}`;
+// Default dev signing key handling:
+//  - production: fail fast (a forged session is a real security hole).
+//   - development/unset: warn only, so a judge's default `docker compose up`
+//     (which sets NODE_ENV=development) starts out of the box.
+const usingDefaultSecret = (process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET;
+if (process.env.NODE_ENV === 'production' && usingDefaultSecret) {
+  console.error('Refusing to start: NODE_ENV=production requires a non-default SESSION_SECRET.');
+  process.exit(1);
+}
+if (usingDefaultSecret) {
+  const scope = `NODE_ENV=${process.env.NODE_ENV || 'unset'}`;
   console.warn(
     `WARNING: using the default dev SESSION_SECRET (${scope}). ` +
       'Sessions can be forged. Set SESSION_SECRET to a long random value before exposing this service.',
