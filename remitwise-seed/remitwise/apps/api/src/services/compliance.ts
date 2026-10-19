@@ -82,6 +82,7 @@ const RANK: Record<Outcome, number> = {
 };
 
 const DOC_LABELS: Record<string, string> = {
+  application_form: 'completed application form',
   admission_letter: 'admission letter',
   cost_estimate: "institution's cost estimate",
   passport: 'valid passport',
@@ -90,8 +91,9 @@ const DOC_LABELS: Record<string, string> = {
   current_estimate: 'updated cost estimate',
 };
 
-// Spec v2, section 6: admission letter, cost estimate, passport, certificates.
-const REQUIRED_DOCS = ['admission_letter', 'cost_estimate', 'passport', 'certificates'];
+// Spec v2, section 6: application form, admission letter, cost estimate,
+// passport and educational certificates.
+const REQUIRED_DOCS = ['application_form', 'admission_letter', 'cost_estimate', 'passport', 'certificates'];
 
 const INJECTION_RE = /\b(ignore|disregard)\b.{0,30}\b(previous|prior|above|all|the|your)\b.{0,20}\b(instruction|rule|prompt)/i;
 
@@ -271,7 +273,10 @@ function evaluateRule(ruleId: string, ctx: ComplianceContext): Evaluated {
           feeBdt: ctx.route.feeBDT,
           feeUsd: Number(feeUSD.toFixed(2)),
           spreadPct,
-          totalPct: Number(totalPct.toFixed(1)),
+          // Keep more precision than we display: near the cap the one-decimal
+          // form can round to "5.0%", which must never be shown as "5.0% above
+          // the 5% limit". The mapper decides the final wording.
+          totalPct: Number(totalPct.toFixed(3)),
           maxFeePct: policy.maxFeePct,
           usdPerBdt: ctx.fx.usdPerBdt,
           minWorkableUsd: minWorkableUsd != null ? Number(minWorkableUsd.toFixed(2)) : null,

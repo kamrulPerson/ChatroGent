@@ -13,9 +13,28 @@ const hashPassword = (pw: string) => {
   return `${salt}:${scryptSync(pw, salt, 64).toString('hex')}`;
 };
 
+// On a judge's first `docker compose up`, the seed container can start before
+// Docker's DNS can resolve the `mongo` service name, failing with
+// "getaddrinfo EAI_AGAIN mongo". Retry the initial connect with a fixed backoff
+// so that transient DNS/network warm-up cannot fail the run. The compose
+// healthcheck already gates on mongo being ready; this covers the DNS gap.
+async function connectWithRetry(client: MongoClient, tries = 10, delayMs = 2000): Promise<void> {
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      await client.connect();
+      return;
+    } catch (e: any) {
+      const reason = e?.code || e?.message || String(e);
+      console.error(`Seed: mongo connect attempt ${attempt}/${tries} failed (${reason}).`);
+      if (attempt === tries) throw e;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
 async function main() {
-  const client = new MongoClient(process.env.MONGO_URL!);
-  await client.connect();
+  const client = new MongoClient(process.env.MONGO_URL!, { serverSelectionTimeoutMS: 5000 });
+  await connectWithRetry(client);
   const db = client.db();
   const now = new Date();
 
@@ -48,11 +67,18 @@ async function main() {
     tier1: { BDT: 800000, MYR: 1500 },
     tier0: { BDT: 50000, MYR: 0 },
   };
+  // Demo account labels keep the story consistent across the dashboard and the
+  // assistant. IDs (userId + currency) and balances are unchanged, so existing
+  // tests are unaffected.
+  const accountLabels: Record<string, string> = {
+    BDT: 'Family taka account',
+    MYR: 'Student card (Kuala Lumpur)',
+  };
   for (const u of demoUsers) {
     for (const currency of ['BDT', 'MYR'] as const) {
       await db.collection('accounts').updateOne(
         { userId: ids[u.key], currency },
-        { $setOnInsert: { balance: balances[u.key][currency], createdAt: now } },
+        { $set: { label: accountLabels[currency] }, $setOnInsert: { balance: balances[u.key][currency], createdAt: now } },
         { upsert: true },
       );
     }
@@ -86,7 +112,13 @@ async function main() {
   }
 
   // Documents, with deliberate edge cases for the compliance logic.
-  const valid = { admission_letter: 'valid', cost_estimate: 'valid', passport: 'valid', certificates: 'valid' };
+  const valid = {
+    application_form: 'valid',
+    admission_letter: 'valid',
+    cost_estimate: 'valid',
+    passport: 'valid',
+    certificates: 'valid',
+  };
   const docStatus: Record<string, Record<string, string>> = {
     tier2: { ...valid },
     tier2expired: { ...valid, passport: 'expired' },

@@ -17,11 +17,11 @@ otherwise build a live provider (test **q**). The demo users/balances come from
 the idempotent seed; each agent test uses its own throwaway user where it needs
 to mutate state.
 
-## Agent integration (`test/agent.ts`, 20 tests)
+## Agent integration (`test/agent.ts`, 25 tests)
 
 | Test | Asserts |
 | --- | --- |
-| **a** Flow 1 end to end | one transfer created, debited once, receipt returned |
+| **a** Flow 1 end to end | one transfer created; the receipt and stored transfer carry the card's `amountBDT`; the balance is debited by that figure exactly once; a second confirm never moves money again |
 | **b** T3 gate | `execute_payment` alone leaves balance and transfers unchanged |
 | **c** tool validation | bad/unknown/`$`-prefixed arguments are rejected |
 | **d** pasted injection | `INJ_01` failed, logged, nothing executed |
@@ -41,6 +41,11 @@ to mutate state.
 | **q** provider factory guard | under `NODE_ENV=test` it throws rather than build a live provider; the explicit offline switch returns no provider |
 | **r** fee ceiling | the refusal names the fee, its share of the amount and a minimum workable amount; sending just above that minimum reaches the card |
 | **s** block suppresses routes | a compliance block emits no routes or proposal card and stops the loop (the model is not asked again) |
+| **t** non-round debit | ৳73,500 and ৳1,23,456 each debit exactly the card `amountBDT`, once, and the receipt and stored transfer agree (regression guard for the balance bug); runs last so its confirmed transfers do not trip the 24h velocity rule for other tests |
+| **u** audit rows | a Flow 1 run writes one `agent_tool_call` row per tool call, each with the user id, redacted inputs and the rules version; the gated `execute_payment` is recorded as `awaiting_confirmation` (a neutral label, not a block) |
+| **v** output-check reason | a figure written with Indian grouping is kept; a figure no tool returned is replaced and the reason is logged as an `output_check` row |
+| **w** fee-ceiling boundary | ৳71,429 reaches the confirmation card, ৳71,428 is refused with the same plain message, which reads "just over the 5% limit" — never "5.0% above the 5% limit" |
+| **x** check-count scope | the trace and the card count only enforced rules; `not_applicable` and `not_enforced` are excluded and the denominator never exceeds 18 (the full rule set) |
 
 ## Unit (`test/unit.ts`, 6 tests)
 

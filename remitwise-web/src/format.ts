@@ -24,7 +24,7 @@ export function ruleStatusLabel(r: {
   status: 'enforced' | 'not_enforced' | 'not_applicable';
   passed: boolean;
 }): { mark: string; label: string; tone: 'ok' | 'warn' | 'muted' | 'bad' } {
-  if (r.status === 'not_enforced') return { mark: '!', label: 'not enforced', tone: 'warn' };
+  if (r.status === 'not_enforced') return { mark: '!', label: 'not enforced in this sandbox', tone: 'warn' };
   if (r.status === 'not_applicable') return { mark: '-', label: 'not applicable', tone: 'muted' };
   return r.passed ? { mark: '✓', label: 'passed', tone: 'ok' } : { mark: '×', label: 'failed', tone: 'bad' };
 }

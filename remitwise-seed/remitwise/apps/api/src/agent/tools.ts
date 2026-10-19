@@ -13,7 +13,7 @@ import { CORRIDOR_META, latestRate } from '../services/convert.js';
 import { rankRoutes } from '../services/routes.js';
 import { corridors } from '../validate.js';
 import { fmtAmount, fmtMoney } from './format.js';
-import { explainBlock } from './explain.js';
+import { checkCount, explainBlock, shortBlockLabel } from './explain.js';
 import type { ToolSpec } from './llm.js';
 
 export type Tier = 'T1' | 'T2' | 'T3';
@@ -105,6 +105,10 @@ export interface ToolResult {
   summary: string;
   data: any;
   card?: any;
+  // Short one-line label for the trace. When present the stream shows this
+  // instead of the full summary, so the plain explanation appears only once, in
+  // the answer.
+  trace?: string;
 }
 
 export type ValidationOutcome = { ok: true; value: any } | { ok: false; error: string };
@@ -205,23 +209,28 @@ async function checkComplianceTool(userId: string, args: any, instructionSource:
     reason: r.reason,
     detail: r.detail,
   }));
-  const passedCount = decision.ruleResults.filter((r) => r.passed && r.status === 'enforced').length;
-  const total = decision.ruleResults.length;
+  // One consistent count everywhere: "N of M applicable checks passed", where M
+  // excludes the not-applicable (and not-enforced) checks.
+  const count = checkCount(decision.ruleResults);
   // Human summary only; raw rule IDs live in the Activity log, never in chat.
   // A block is written by the same plain-language mapper the offline flow uses.
   const summary =
-    decision.decision === 'pass' ? `${passedCount} of ${total} checks passed` : explainBlock(failures);
+    decision.decision === 'pass'
+      ? `${count.passed} of ${count.applicable} applicable checks passed`
+      : explainBlock(failures);
   return {
     status: decision.decision === 'pass' ? 'done' : 'blocked',
     summary,
+    trace: decision.decision === 'pass' ? undefined : shortBlockLabel(failures),
     data: {
       decision: decision.decision,
       failedRules: failed.map((r) => r.ruleId),
       failures,
       notEnforced: decision.notEnforced,
       rulesVersion: decision.rulesVersion,
-      passedCount,
-      total,
+      passedCount: count.passed,
+      total: count.applicable,
+      notApplicable: count.notApplicable,
       messages: failed.map((r) => r.userMessage).filter(Boolean),
     },
   };
@@ -382,6 +391,11 @@ async function setAlert(userId: string, args: any): Promise<ToolResult> {
 async function proposePayment(userId: string, args: any, instructionSource: string): Promise<ToolResult> {
   const db = await getDb();
   const student = await db.collection('student_files').findOne({ userId: new ObjectId(userId) });
+  // The approver's own name comes from the authenticated user record. It is
+  // placed only on the card (never in the tool result data), so it is shown to
+  // the user but never sent to the model.
+  const approver = await db.collection('users').findOne({ _id: new ObjectId(userId) });
+  const approverName = (approver?.name as string) || 'the account holder';
   const recipient = args.recipient || student?.institution || 'your institution';
   const usdRes = await amountToUsd(args.amount, args.currency);
   if (!usdRes.ok) return { status: 'error', summary: usdRes.error, data: { error: 'no_rate' } };
@@ -421,6 +435,7 @@ async function proposePayment(userId: string, args: any, instructionSource: stri
     return {
       status: blocked ? 'blocked' : 'error',
       summary: plain,
+      trace: failures.length ? shortBlockLabel(failures) : undefined,
       data: {
         error: res.body?.error,
         decision: res.body?.decision,
@@ -465,6 +480,7 @@ async function proposePayment(userId: string, args: any, instructionSource: stri
     amountBDT: q.sendBDT,
     amountUSD: Number(usdRes.usd.toFixed(2)),
     recipient,
+    approverName,
     currency: q.currency,
     corridor: args.corridor,
     purpose: args.purpose || 'tuition',

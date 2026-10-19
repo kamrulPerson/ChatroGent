@@ -37,6 +37,7 @@ export interface Proposal {
   id: string;
   amountBDT: number;
   recipient: string;
+  approverName?: string;
   route: Route;
   checks: string[];
   status: 'pending' | 'confirmed' | 'cancelled' | 'failed';
@@ -53,6 +54,7 @@ export interface Receipt {
   recipient: string;
   routeName: string;
   time: string;
+  approverName?: string;
 }
 
 export interface AlertRule {

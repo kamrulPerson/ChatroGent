@@ -25,7 +25,7 @@ POST /api/chat { message, pasted }
     • tools are buffered; text is emitted first, then cards
         │
         ▼
-  checkOutput()  ──►  SSE: meta, tool_call, tool_result, card, text, done
+  outputVerdict()  ──►  SSE: meta, tool_call, tool_result, card, text, done
 ```
 
 Any provider failure (HTTP error, timeout, 429, loop cap) degrades to the same
@@ -83,13 +83,22 @@ errors, timeouts and 429s also degrade to the offline flow.
 ## Plain-language mapper (`agent/explain.ts`)
 
 Every compliance block — live or offline — is rendered by `explainBlock()`: a
-cause in one sentence and a next step in one sentence, with no rule IDs and no
-"N of 18 checks" wording. The same module's `safeFallback()` is used when the
-model's own text fails the output check, so the replacement is never a
-concatenation of raw tool summaries. The fee-ceiling case (rule `MIN_AMT`) is
-described from the rule's own figures — the fee, its share of the amount and the
-smallest amount that clears the cap on that route — and is never called
-"below minimum", because that branch did not fire.
+cause in one sentence and a next step in one sentence, with no rule IDs. The
+check-count wording is produced by one function, `checkCount()`, and always reads
+"N of M applicable checks passed", where M counts only the enforced checks. The
+confirmation card uses the same rule (its denominator is the count of `enforced`
+rules, and only those are listed under "See all"), so a `not_applicable` or
+`not_enforced` result is never shown as a pass, a failure, or part of the total.
+A block's trace row
+uses `shortBlockLabel()` — one plain line such as "Blocked: fee too high for this
+amount" — while the full sentence is emitted once, in the answer. The same
+module's `safeFallback()` is used when the model's own text fails the output
+check, so the replacement is never a concatenation of raw tool summaries. The
+fee-ceiling case (rule `MIN_AMT`) is described from the rule's own figures — the
+fee, its share of the amount and the smallest amount that clears the cap on that
+route — and is never called "below minimum", because that branch did not fire.
+Near the cap (within 0.1%) it says "just over the 5% limit" rather than printing
+a share that rounds to the cap itself (e.g. "5.0% above the 5% limit").
 
 ## Route consistency & provenance (A1, A12)
 

@@ -23,7 +23,6 @@ import { redactString, redactValue } from '../src/agent/redact.js';
 const BASE = process.env.TEST_BASE_URL || 'http://localhost:4000';
 const DEMO_EMAIL = 'tier2@demo.remitwise';
 const DEMO_PASSWORD = 'demo1234';
-const BDT_PER_USD = 120;
 
 let userId = '';
 let token = '';
@@ -203,14 +202,17 @@ test('a: Flow 1 end to end creates exactly one transfer and debits once', async 
   assert.equal(c1.status, 200, JSON.stringify(c1.body));
   assert.ok(c1.body.receiptId, 'receipt issued');
   assert.equal(c1.body.status, 'completed');
+  // The debit is the card's BDT figure, exactly, and the receipt agrees.
+  assert.equal(c1.body.amountBDT, proposal.amountBDT, 'receipt amountBDT equals the card amountBDT');
 
   const transfers = await getDb().then((db) =>
     db.collection('transfers').find({ proposalId: new ObjectId(proposal.id) }).toArray(),
   );
   assert.equal(transfers.length, 1, 'exactly one transfer document');
+  assert.equal(transfers[0].amountBDT, proposal.amountBDT, 'transfers.amountBDT equals the card amountBDT');
 
   const afterFirst = await bdtBalance();
-  assert.equal(afterFirst, before - 1000 * BDT_PER_USD, 'balance debited exactly once');
+  assert.equal(afterFirst, before - proposal.amountBDT, 'balance debited by the card amountBDT exactly once');
 
   // Single-use: a second confirm must not move money again.
   const c2 = await confirm(proposal.id, proposal.approvalHash);
@@ -417,7 +419,7 @@ test('A10: offline follow-ups handle pending amount, bare numbers and help', asy
   const small = await offlineTurnWithHistory('5000 taka', history);
   assert.ok(toolNames(small).includes('check_compliance'), 'a small explicit amount runs the payment flow');
   assert.doesNotMatch(text(small), /\b[A-Z]{3,}_\d{2}\b/, 'no raw rule IDs in the message');
-  assert.match(text(small), /fee and FX margin/i, 'names the fee ceiling, not a minimum rule');
+  assert.match(text(small), /fee.*FX margin/i, 'names the fee ceiling, not a minimum rule');
   assert.doesNotMatch(text(small), /below minimum/i, 'the below-minimum rule did not fire, so it is not named');
 
   // A viable explicit amount completes Flow 1 and reaches the confirmation card.
@@ -650,8 +652,9 @@ test('r: fee ceiling explains fee, share and minimum workable amount', async () 
   ];
   const small = await offlineTurnWithHistory('5000 taka', history);
   const body = text(small);
-  assert.match(body, /fee and FX margin/i, 'names the fee as the cause');
+  assert.match(body, /৳[\d,]+ fee plus the [\d.]+% FX margin/i, 'names the fee and the FX margin from the rule inputs');
   assert.match(body, /about \d+(\.\d+)?% of the amount/i, 'gives the share of the amount');
+  assert.match(body, /above the 5% limit/i, 'states the configured cap');
   assert.match(body, /at least/i, 'gives a minimum workable amount');
   assert.doesNotMatch(body, /below minimum/i, 'does not mislabel it as the below-minimum rule');
   const m = body.match(/at least ৳([\d,]+)/);
@@ -680,4 +683,181 @@ test('s: a compliance block suppresses the routes card and stops the loop', asyn
   assert.doesNotMatch(text(events), /never be streamed/, 'the loop stopped and did not ask the model again');
   const metas = events.filter((e) => e.type === 'meta').map((e) => (e as any).mode);
   assert.deepEqual(metas, ['llm'], 'no offline retry for a compliance block');
+});
+
+// (u) Requirement: one audit row per tool call, with the user id attached so the
+// Activity log (filtered by userId) shows the run. execute_payment is gated and
+// still recorded.
+test('u: a Flow 1 run writes one audit row per tool call', async () => {
+  const since = new Date();
+  const events = await turn(
+    [
+      { toolCalls: [{ name: 'get_balance' }] },
+      { toolCalls: [{ name: 'check_compliance', arguments: { corridor: 'BD-MY', amount: 1000, currency: 'USD', purpose: 'tuition' } }] },
+      { toolCalls: [{ name: 'compare_routes', arguments: { corridor: 'BD-MY', amount: 1000, currency: 'USD' } }] },
+      {
+        toolCalls: [
+          {
+            name: 'propose_payment',
+            arguments: {
+              corridor: 'BD-MY',
+              amount: 1000,
+              currency: 'USD',
+              purpose: 'tuition',
+              coveragePeriodMonths: 12,
+              isFirstRelease: true,
+            },
+          },
+        ],
+      },
+      { content: 'Draft ready. Review the card. Nothing has been sent.' },
+    ],
+    'Dad wants to send 1000 USD for my tuition',
+  );
+  const called = ['get_balance', 'check_compliance', 'compare_routes', 'propose_payment'];
+  assert.deepEqual(toolNames(events), called, 'the four Flow 1 tools ran');
+
+  const rows = await getDb().then((db) =>
+    db.collection('audit_log').find({ userId, ts: { $gte: since }, event: 'agent_tool_call' }).toArray(),
+  );
+  assert.equal(rows.length, called.length, 'exactly one audit row per tool call');
+  assert.deepEqual(rows.map((r) => r.toolName).sort(), [...called].sort(), 'every call is recorded by name');
+  for (const r of rows) {
+    assert.equal(r.userId, userId, 'row carries the user id so it appears in the Activity log');
+    assert.ok(r.inputs !== undefined, 'row records redacted inputs');
+    assert.ok(r.rulesVersion, 'row records the rules version');
+  }
+
+  const gateSince = new Date();
+  await turn(
+    [
+      { toolCalls: [{ name: 'execute_payment', arguments: { proposalId: 'deadbeefdeadbeefdeadbeef' } }] },
+      { content: 'Awaiting your confirmation. Nothing has been sent.' },
+    ],
+    'send it now',
+  );
+  const gate = await getDb().then((db) =>
+    db.collection('audit_log').find({ userId, ts: { $gte: gateSince }, event: 'agent_tool_call' }).toArray(),
+  );
+  const gateRow = gate.find((r) => r.toolName === 'execute_payment');
+  assert.ok(gateRow, 'the gated execute_payment call is recorded');
+  assert.equal(gateRow.decision, 'awaiting_confirmation', 'the gate is recorded as awaiting confirmation');
+  assert.equal(gateRow.outcome, 'awaiting_confirmation', 'the neutral outcome label is used, not a block');
+});
+
+// (v) Output check: a valid figure written with Indian grouping is kept, and a
+// figure no tool returned is replaced and the reason is logged.
+test('v: the output check keeps grouped figures and logs the replacement reason', async () => {
+  const bal = await bdtBalance();
+  const grouped = bal.toLocaleString('en-IN');
+  const kept = await turn(
+    [
+      { toolCalls: [{ name: 'get_balance' }] },
+      { content: `Your taka balance is ৳${grouped}. Nothing has been sent.` },
+    ],
+    'what is my balance',
+  );
+  assert.match(text(kept), new RegExp(`৳${grouped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the grouped tool figure is kept');
+  assert.match(text(kept), /Your taka balance is/, "the model's own valid sentence survives");
+
+  const since = new Date();
+  const replaced = await turn(
+    [
+      { toolCalls: [{ name: 'get_balance' }] },
+      { content: 'Your balance is ৳71,42,907. Nothing has been sent.' },
+    ],
+    'what is my balance',
+  );
+  assert.doesNotMatch(text(replaced), /71,42,907/, 'a figure no tool returned is replaced');
+  const rows = await getDb().then((db) =>
+    db.collection('audit_log').find({ userId, ts: { $gte: since }, event: 'output_check' }).toArray(),
+  );
+  assert.equal(rows.length, 1, 'exactly one output_check row');
+  assert.match(String(rows[0].reason), /71,42,907|7142907/, 'the reason names the offending figure');
+});
+
+// (w) The fee-ceiling boundary: the suggested minimum clears the cap and one taka
+// less is refused with the same plain-language message.
+test('w: the fee-ceiling boundary — ৳71,429 passes, ৳71,428 is refused', async () => {
+  const ask = await offlineTurn('Dad wants to send');
+  const history = [
+    { role: 'user' as const, content: 'Dad wants to send' },
+    { role: 'assistant' as const, content: text(ask) },
+  ];
+
+  const pass = await offlineTurnWithHistory('৳71,429', history);
+  assert.ok(card(pass, 'proposal'), 'amount at the suggested minimum reaches the confirmation card');
+
+  const block = await offlineTurnWithHistory('৳71,428', history);
+  assert.equal(card(block, 'proposal'), undefined, 'one taka below the minimum is refused');
+  const body = text(block);
+  assert.match(body, /fee.*FX margin/i, 'refused with the fee-ceiling message');
+  assert.match(body, /just over the 5% limit/i, 'near the cap it says "just over", never "5.0% above"');
+  assert.doesNotMatch(body, /5\.0% (of the amount, )?above the 5% limit/i, 'never reads "5.0% above the 5% limit"');
+  assert.match(body, /at least ৳71,429/i, 'suggests the same minimum');
+  // The trace row names the reason in one plain line; the full sentence above is
+  // the only place the whole explanation is written.
+  const trace = toolResult(block, 'check_compliance');
+  assert.equal(trace.summary, 'Blocked: fee too high for this amount', 'short block label on the trace');
+  const passCount = toolResult(pass, 'check_compliance');
+  assert.match(passCount.summary, /^\d+ of \d+ applicable checks passed$/, 'one check-count wording');
+});
+
+// (x) The check count excludes not-applicable and not-enforced rules everywhere,
+// and its denominator is the number of enforced rules — never the full rule set.
+test('x: check counts use only applicable (enforced) rules', async () => {
+  const events = await offlineTurn('Dad wants to send ৳1,00,000 for my tuition');
+
+  // The compliance tool's own count (used for the trace and the answer text).
+  const chk = toolResult(events, 'check_compliance');
+  assert.ok(chk?.data, 'check_compliance produced data');
+  const traceMatch = String(chk.summary).match(/^(\d+) of (\d+) applicable checks passed$/);
+  assert.ok(traceMatch, 'check count reads "N of M applicable checks passed"');
+  assert.equal(Number(traceMatch![2]), chk.data.total, 'trace denominator equals the tool count');
+
+  // The proposal card carries the full rule set; the card's denominator must be
+  // the number of enforced rules, with not-applicable/not-enforced excluded.
+  const props = card(events, 'proposal')?.proposal;
+  assert.ok(props?.rules?.length, 'proposal card emitted with rules');
+  const rules: any[] = props.rules;
+  const totalRules = rules.length;
+  const enforced = rules.filter((r) => r.status === 'enforced').length;
+  const notApplicable = rules.filter((r) => r.status === 'not_applicable').length;
+  const notEnforced = rules.filter((r) => r.status === 'not_enforced').length;
+
+  assert.equal(enforced + notApplicable + notEnforced, totalRules, 'every rule has one status');
+  assert.ok(notApplicable + notEnforced > 0, 'this scenario has rules to exclude');
+  assert.ok(enforced < totalRules, 'the denominator is smaller than the full rule set');
+  assert.ok(chk.data.total <= totalRules, 'trace denominator never exceeds the full rule set');
+  assert.ok(chk.data.passedCount <= chk.data.total, 'passed never exceeds the denominator');
+});
+
+// (t) A non-round amount debits exactly the card's BDT figure, once. This is the
+// regression guard for the balance bug: the debit used to be recomputed from a
+// hard-coded token rate and drifted from the card/receipt figure. Two amounts
+// are checked, including one that is not a round number of dollars. It runs last
+// because each confirmed transfer counts toward the 24h velocity rule, which
+// other tests' check_compliance runs must not trip.
+test('t: debit == card amountBDT == receipt == transfer, for non-round amounts', async () => {
+  for (const [message, bdt] of [
+    ['Dad wants to send ৳73,500 for my tuition', 73500],
+    ['Dad wants to send ৳1,23,456 for my tuition', 123456],
+  ] as const) {
+    const before = await bdtBalance();
+    const events = await offlineTurn(message);
+    const proposal = card(events, 'proposal')?.proposal;
+    assert.ok(proposal?.id, `proposal card emitted for ${message}`);
+    assert.equal(proposal.amountBDT, bdt, `card amountBDT is ${bdt}`);
+
+    const c = await confirm(proposal.id, proposal.approvalHash);
+    assert.equal(c.status, 200, JSON.stringify(c.body));
+    assert.equal(c.body.amountBDT, bdt, 'receipt amountBDT equals the card');
+    assert.equal(await bdtBalance(), before - bdt, 'balance debited by the card figure, once');
+
+    const t = await getDb().then((db) =>
+      db.collection('transfers').find({ proposalId: new ObjectId(proposal.id) }).toArray(),
+    );
+    assert.equal(t.length, 1, 'exactly one transfer');
+    assert.equal(t[0].amountBDT, bdt, 'stored transfer amount equals the card figure');
+  }
 });

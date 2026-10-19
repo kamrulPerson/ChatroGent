@@ -69,3 +69,11 @@ See `docs/TEST_CASES.md` for what each suite covers. The automated suite never
 calls the live provider: the `test:unit` and `test:agent` scripts set
 `AGENT_TEST_MODE=1`, and the provider factory refuses to build a live provider
 under `NODE_ENV=test` even if a key is present.
+
+## Known limitations
+
+- The stock `.env` ships `SESSION_SECRET=devsecret`. With `NODE_ENV=development`
+  (the compose default) the API logs a clear startup warning but still boots, so a
+  judge's `docker compose up` works; under `NODE_ENV=production` it refuses to
+  start (exit 1) until you set a long random `SESSION_SECRET`. Either way the
+  default secret is forgeable, so it is not safe to expose beyond localhost.

@@ -17,10 +17,21 @@ import { audit } from './audit.js';
 import { policy } from './config.js';
 import { logProviderStartup } from './agent/llm.js';
 
-// Fail fast: never run in production with the default demo signing key.
-if (process.env.NODE_ENV === 'production' && (process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET) {
+// Default dev signing key handling:
+//  - production: fail fast (a forged session is a real security hole).
+//   - development/unset: warn only, so a judge's default `docker compose up`
+//     (which sets NODE_ENV=development) starts out of the box.
+const usingDefaultSecret = (process.env.SESSION_SECRET || DEFAULT_DEV_SECRET) === DEFAULT_DEV_SECRET;
+if (process.env.NODE_ENV === 'production' && usingDefaultSecret) {
   console.error('Refusing to start: NODE_ENV=production requires a non-default SESSION_SECRET.');
   process.exit(1);
+}
+if (usingDefaultSecret) {
+  const scope = `NODE_ENV=${process.env.NODE_ENV || 'unset'}`;
+  console.warn(
+    `WARNING: using the default dev SESSION_SECRET (${scope}). ` +
+      'Sessions can be forged. Set SESSION_SECRET to a long random value before exposing this service.',
+  );
 }
 
 const app = express();

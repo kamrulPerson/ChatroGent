@@ -14,6 +14,7 @@ import { invokeTool } from './exec.js';
 import { runFallback } from './fallback.js';
 import { explainBlock, safeFallback, type RuleFailure } from './explain.js';
 import { redactString, redactValue } from './redact.js';
+import { audit } from '../audit.js';
 import type { Emit } from './events.js';
 
 const MAX_ITERATIONS = 6;
@@ -140,7 +141,20 @@ async function runLlm(req: AgentRequest, provider: LlmProvider, instructionSourc
   // Requirement 5: never offer a route card when the payment is blocked.
   if (blockFailures) cards.length = 0;
   const fallbackText = blockFailures ? explainBlock(blockFailures) : safeFallback();
-  const safe = checkOutput(final, allowed, transferCompleted, fallbackText);
+  const verdictOut = outputVerdict(final, allowed, transferCompleted);
+  if (!verdictOut.ok) {
+    // We replaced the live model's text. Record exactly why so the Activity log
+    // shows whether it was a false "sent" claim or a figure no tool returned.
+    await audit({
+      event: 'output_check',
+      tier: 'SYS',
+      outcome: 'blocked',
+      decision: 'blocked',
+      userId,
+      reason: verdictOut.reason,
+    });
+  }
+  const safe = verdictOut.ok ? final : fallbackText;
   streamText(emit, redactString(stripRuleIds(safe)));
   for (const card of cards) emit({ type: 'card', card: redactValue(card) });
 }
@@ -173,22 +187,32 @@ function isAllowedNumber(n: number, allowed: number[]): boolean {
 //  (a) never claim a payment moved money unless this turn actually completed a
 //      transfer (execute_payment is a T3 gate, so it never will);
 //  (b) every number shown must have come from a tool result this turn.
-// When the model's text fails either check we replace it with `fallbackText`,
-// which is produced by the plain-language mapper (never a concatenation of raw
-// tool summaries).
-export function checkOutput(text: string, allowed: number[], transferCompleted: boolean, fallbackText: string): string {
+// Indian-style grouping ("23,80,000") and a leading taka sign ("৳") do not
+// count as part of the number, so a valid tool figure written either way is
+// accepted. Returns the reason when the text must be replaced.
+export function outputVerdict(
+  text: string,
+  allowed: number[],
+  transferCompleted: boolean,
+): { ok: true } | { ok: false; reason: string } {
   const negative = /(nothing|not|never|no)\s+(has been|have been|was|were|been)?\s*(sent|transferred|completed|executed|paid|disbursed)/i;
   const positive = /(has|have)\s+been\s+(sent|transferred|completed|executed|paid|disbursed)|successfully\s+(sent|transferred|completed|executed|paid|disbursed)|payment\s+(sent|completed)/i;
   if (positive.test(text) && !negative.test(text) && !transferCompleted) {
-    return fallbackText;
+    return { ok: false, reason: 'false sent claim (no transfer this turn)' };
   }
+  // Strip a leading currency sign/letter and normalise group separators before
+  // comparing. Numbers keep their sign for negatives such as deltas.
   const numbers = (text.match(/-?\d[\d,]*(?:\.\d+)?/g) || []).map((s) => Number(s.replace(/,/g, '')));
   for (const n of numbers) {
     if (Number.isFinite(n) && !isAllowedNumber(n, allowed)) {
-      return fallbackText;
+      return { ok: false, reason: `figure not found in a tool result: ${n}` };
     }
   }
-  return text;
+  return { ok: true };
+}
+
+export function checkOutput(text: string, allowed: number[], transferCompleted: boolean, fallbackText: string): string {
+  return outputVerdict(text, allowed, transferCompleted).ok ? text : fallbackText;
 }
 
 function streamText(emit: Emit, text: string): void {

@@ -6,11 +6,12 @@ import { fmtBDT } from '../format';
 import FxChart from '../components/FxChart';
 
 const CURRENCY_META: Record<string, { label: string; symbol: string }> = {
-  BDT: { label: 'Taka account', symbol: '৳' },
-  MYR: { label: 'Student card balance', symbol: 'RM ' },
+  BDT: { label: 'Family taka account', symbol: '৳' },
+  MYR: { label: 'Student card (Kuala Lumpur)', symbol: 'RM ' },
 };
 
 const DOC_LABEL: Record<string, string> = {
+  application_form: 'Application form',
   admission_letter: 'Admission letter',
   cost_estimate: "University's cost estimate",
   passport: 'Valid passport',
@@ -27,7 +28,10 @@ export default function DashboardPage() {
   }, []);
 
   const balList = data
-    ? data.balances.map((b) => ({ currency: b.currency, amount: b.amount, ...(CURRENCY_META[b.currency] ?? { label: b.currency, symbol: '' }) }))
+    ? data.balances.map((b) => {
+        const meta = CURRENCY_META[b.currency] ?? { label: b.currency, symbol: '' };
+        return { currency: b.currency, amount: b.amount, symbol: meta.symbol, label: b.label || meta.label };
+      })
     : mockBalances;
 
   const docList = data
