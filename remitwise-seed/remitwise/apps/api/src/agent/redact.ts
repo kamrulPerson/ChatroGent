@@ -46,10 +46,12 @@ export function redactString(input: string): string {
 export function redactValue(value: any, seen = new WeakSet<object>()): any {
   if (typeof value === 'string') return redactString(value);
   if (value === null || typeof value !== 'object') return value;
+  // Dates are immutable and serialize to a string, so a repeated Date object is
+  // not a cycle: check this before the seen-set guard.
+  if (value instanceof Date) return value.toISOString();
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
   if (Array.isArray(value)) return value.map((v) => redactValue(v, seen));
-  if (value instanceof Date) return value.toISOString();
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(value)) {
     // Never carry a key-holding field through, even if its value dodges the

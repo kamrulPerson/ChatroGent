@@ -238,10 +238,13 @@ export function resolveProvider(): { provider: LlmProvider | null; mode: 'llm' |
 // Startup log: key presence, base host and whether a model is selected. Never
 // the key itself.
 export function logProviderStartup(): void {
-  const has = hasKey() ? 'yes' : 'no';
-  console.log(`LLM key present: ${has}; base host: ${baseUrlHost()}`);
+  const keyPresent = hasKey();
+  console.log(`LLM key present: ${keyPresent ? 'yes' : 'no'}; base host: ${baseUrlHost()}`);
   const model = process.env.LLM_MODEL || DEFAULT_MODEL;
-  if (has && process.env.LLM_BASE_URL && model) {
+  // Same condition resolveProvider() uses: a live provider is only built when
+  // all three of key, base URL and model are set (and not under test mode).
+  const testMode = process.env.AGENT_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
+  if (keyPresent && process.env.LLM_BASE_URL && model && !testMode) {
     console.log(`LLM live provider enabled with model: ${model}`);
   } else {
     console.log('LLM live provider not configured; running in offline mode.');
